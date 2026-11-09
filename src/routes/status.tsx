@@ -41,15 +41,15 @@ function Status() {
           ) : (
             <dl className="grid grid-cols-2 gap-x-6 gap-y-1 text-xs md:grid-cols-4">
               <Item k="Last heartbeat" v={`${fmtAge(new Date(hb.last_heartbeat_at).getTime())} ago`} />
-              <Item k="Upstream" v={stats.feed?.upstream ?? "—"} />
-              <Item k="Last event" v={stats.feed?.lastEventAt ? `${fmtAge(stats.feed.lastEventAt)} ago` : "—"} />
-              <Item k="Reconnects" v={stats.feed?.reconnects ?? "—"} />
-              <Item k="Launches seen" v={stats.feed?.launches ?? "—"} />
-              <Item k="Migrations seen" v={stats.feed?.migrations ?? "—"} />
-              <Item k="Trade subscriptions" v={stats.feed?.activeTradeSubscriptions ?? "—"} />
-              <Item k="Metered trade msgs" v={stats.feed?.tradeMessages ?? "—"} />
-              <Item k="Tracked markets" v={stats.trackedMarkets ?? "—"} />
-              <Item k="SOL/USD" v={stats.solUsd?.price ? `$${stats.solUsd.price} (${stats.solUsd.source})` : "unavailable"} />
+              <Item k="Upstream" v={stats["feed"]?.upstream ?? "—"} />
+              <Item k="Last event" v={stats["feed"]?.lastEventAt ? `${fmtAge(stats["feed"].lastEventAt)} ago` : "—"} />
+              <Item k="Reconnects" v={stats["feed"]?.reconnects ?? "—"} />
+              <Item k="Launches seen" v={stats["feed"]?.launches ?? "—"} />
+              <Item k="Migrations seen" v={stats["feed"]?.migrations ?? "—"} />
+              <Item k="Trade subscriptions" v={stats["feed"]?.activeTradeSubscriptions ?? "—"} />
+              <Item k="Metered trade msgs" v={stats["feed"]?.tradeMessages ?? "—"} />
+              <Item k="Tracked markets" v={stats["trackedMarkets"] ?? "—"} />
+              <Item k="SOL/USD" v={stats["solUsd"]?.price ? `$${stats["solUsd"].price} (${stats["solUsd"].source})` : "unavailable"} />
               <Item k="Browser stream" v={hb.public_url ? "available" : "PUBLIC_URL not set"} />
               <Item k="Last browser update" v={feed.lastMessageAt ? `${fmtAge(feed.lastMessageAt)} ago` : "—"} />
             </dl>

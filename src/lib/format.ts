@@ -11,8 +11,8 @@ export function fmtPrice(v: number | null | undefined, prefix = "$"): string {
   const s = a.toFixed(20);
   const m = s.match(/^0\.(0+)(\d{1,4})/);
   if (!m) return prefix + v.toExponential(2);
-  const zeros = m[1].length;
-  const digits = m[2].replace(/0+$/, "") || "0";
+  const zeros = m[1]!.length;
+  const digits = m[2]!.replace(/0+$/, "") || "0";
   const sub = String(zeros).split("").map((d) => SUB[Number(d)]).join("");
   return `${v < 0 ? "-" : ""}${prefix}0.0${sub}${digits}`;
 }

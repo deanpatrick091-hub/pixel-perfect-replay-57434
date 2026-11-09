@@ -27,25 +27,25 @@ function AuthPage() {
   const [pw, setPw] = useState("");
   const [busy, setBusy] = useState(false);
 
-  async function submit(e: FormEvent) {
+  async function submit(e: FormEvent): Promise<void> {
     e.preventDefault();
     setBusy(true);
     if (mode === "up") {
       const { data, error } = await supabase.auth.signUp({ email, password: pw, options: { emailRedirectTo: window.location.origin } });
       setBusy(false);
-      if (error) return toast.error(error.message);
-      if (!data.session) return toast.success("Check your email to confirm your account.");
+      if (error) { toast.error(error.message); return; }
+      if (!data.session) { toast.success("Check your email to confirm your account."); return; }
     } else {
       const { error } = await supabase.auth.signInWithPassword({ email, password: pw });
       setBusy(false);
-      if (error) return toast.error(error.message);
+      if (error) { toast.error(error.message); return; }
     }
     nav({ to: "/" });
   }
 
-  async function google() {
+  async function google(): Promise<void> {
     const r = await lovable.auth.signInWithOAuth("google", { redirect_uri: window.location.origin });
-    if (r.error) return toast.error(String(r.error.message ?? r.error));
+    if (r.error) { toast.error(String(r.error.message ?? r.error)); return; }
     if (r.redirected) return;
     nav({ to: "/" });
   }
