@@ -8,6 +8,13 @@
       "when": 1794255532243,
       "tag": "0000_paper_trading_core",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1794256416029,
+      "tag": "0001_paper_orders_null_amount_guard",
+      "breakpoints": true
     }
   ]
 }
