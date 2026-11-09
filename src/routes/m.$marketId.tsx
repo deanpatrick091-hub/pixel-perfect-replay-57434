@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { ArrowRight } from "lucide-react";
 import { useFeed } from "@/lib/feed/client";
@@ -138,7 +138,7 @@ function Terminal() {
 
 function Stats({ m, u }: { m: MarketSummary; u: ReturnType<typeof marketUsd> }) {
   const s = m.stats;
-  const cell = (label: string, v: React.ReactNode) => (
+  const cell = (label: string, v: ReactNode) => (
     <div className="flex flex-col"><span className="text-[10px] uppercase tracking-wide text-muted-foreground">{label}</span><span className="num text-xs">{v}</span></div>
   );
   return (

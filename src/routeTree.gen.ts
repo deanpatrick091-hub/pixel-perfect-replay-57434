@@ -10,11 +10,17 @@
 
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as IndexRouteImport } from './routes/index'
+import { Route as MMarketIdRouteImport } from './routes/m.$marketId'
 import { Route as ApiPublicWorkerIngestRouteImport } from './routes/api/public/worker-ingest'
 
 const IndexRoute = IndexRouteImport.update({
   id: '/',
   path: '/',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const MMarketIdRoute = MMarketIdRouteImport.update({
+  id: '/m/$marketId',
+  path: '/m/$marketId',
   getParentRoute: () => rootRouteImport,
 } as any)
 const ApiPublicWorkerIngestRoute = ApiPublicWorkerIngestRouteImport.update({
@@ -25,27 +31,31 @@ const ApiPublicWorkerIngestRoute = ApiPublicWorkerIngestRouteImport.update({
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
+  '/m/$marketId': typeof MMarketIdRoute
   '/api/public/worker-ingest': typeof ApiPublicWorkerIngestRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
+  '/m/$marketId': typeof MMarketIdRoute
   '/api/public/worker-ingest': typeof ApiPublicWorkerIngestRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
+  '/m/$marketId': typeof MMarketIdRoute
   '/api/public/worker-ingest': typeof ApiPublicWorkerIngestRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
-  fullPaths: '/' | '/api/public/worker-ingest'
+  fullPaths: '/' | '/m/$marketId' | '/api/public/worker-ingest'
   fileRoutesByTo: FileRoutesByTo
-  to: '/' | '/api/public/worker-ingest'
-  id: '__root__' | '/' | '/api/public/worker-ingest'
+  to: '/' | '/m/$marketId' | '/api/public/worker-ingest'
+  id: '__root__' | '/' | '/m/$marketId' | '/api/public/worker-ingest'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
+  MMarketIdRoute: typeof MMarketIdRoute
   ApiPublicWorkerIngestRoute: typeof ApiPublicWorkerIngestRoute
 }
 
@@ -56,6 +66,13 @@ declare module '@tanstack/react-router' {
       path: '/'
       fullPath: '/'
       preLoaderRoute: typeof IndexRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/m/$marketId': {
+      id: '/m/$marketId'
+      path: '/m/$marketId'
+      fullPath: '/m/$marketId'
+      preLoaderRoute: typeof MMarketIdRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/api/public/worker-ingest': {
@@ -70,6 +87,7 @@ declare module '@tanstack/react-router' {
 
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
+  MMarketIdRoute: MMarketIdRoute,
   ApiPublicWorkerIngestRoute: ApiPublicWorkerIngestRoute,
 }
 export const routeTree = rootRouteImport
