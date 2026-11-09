@@ -84,7 +84,7 @@ export const Route = createFileRoute("/api/public/worker-ingest")({
         if (body.markets.length) {
           const { error } = await supabaseAdmin
             .from("markets")
-            .upsert(body.markets.map((m) => ({ ...m, updated_at: now })), { onConflict: "id" });
+            .upsert(body.markets.map((m) => ({ ...m, updated_at: now })) as never, { onConflict: "id" });
           if (error) errors.push(`markets: ${error.message}`);
         }
         if (body.reference_prices.length) {

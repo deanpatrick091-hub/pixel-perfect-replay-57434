@@ -61,7 +61,7 @@ function Discover() {
       if (filters.minLiq && (u.liquidityUsd ?? 0) < filters.minLiq) continue;
       if (filters.minMcap && (u.mcapUsd ?? 0) < filters.minMcap) continue;
       if (filters.minVol && (u.volUsd("1h") ?? 0) < filters.minVol) continue;
-      out[m.stage]?.push(m);
+      (out[m.stage] ??= []).push(m);
     }
     for (const k of Object.keys(out)) {
       const s = sorts[k] ?? "newest";
@@ -69,8 +69,7 @@ function Discover() {
         const u = marketUsd(m, feed.reference);
         return s === "newest" ? m.launchedAt : s === "mcap" ? u.mcapUsd ?? 0 : s === "volume" ? u.volUsd("1h") ?? 0 : m.curveProgress ?? 0;
       };
-      out[k].sort((a, b) => key(b) - key(a));
-      out[k] = out[k].slice(0, 150);
+      out[k] = (out[k] ?? []).sort((a, b) => key(b) - key(a)).slice(0, 150);
     }
     return out;
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -92,7 +91,7 @@ function Discover() {
         {COLS.map((c) => (
           <button key={c.key} role="tab" aria-selected={mobileCol === c.key} onClick={() => setMobileCol(c.key)}
             className={cn("flex-1 py-2 text-xs", mobileCol === c.key ? "border-b-2 border-primary text-foreground" : "text-muted-foreground")}>
-            {c.title} <span className="num">{cols[c.key].length}</span>
+            {c.title} <span className="num">{cols[c.key]?.length ?? 0}</span>
           </button>
         ))}
       </div>
@@ -101,7 +100,7 @@ function Discover() {
           <section key={c.key} className={cn("flex min-h-0 flex-col border-border md:border-r md:last:border-r-0", mobileCol !== c.key && "hidden md:flex")}>
             <div className="hidden items-center gap-2 border-b border-border px-2 py-1.5 md:flex">
               <h2 className="text-xs font-semibold">{c.title}</h2>
-              <span className="num text-xs text-muted-foreground">{cols[c.key].length}</span>
+              <span className="num text-xs text-muted-foreground">{cols[c.key]?.length ?? 0}</span>
               <select aria-label={`Sort ${c.title}`} value={sorts[c.key]} onChange={(e) => setSorts({ ...sorts, [c.key]: e.target.value as Sort })}
                 className="ml-auto rounded border border-border bg-surface px-1 py-0.5 text-[11px]">
                 <option value="newest">Newest</option>
@@ -111,12 +110,12 @@ function Discover() {
               </select>
             </div>
             <div className="scroll-thin min-h-0 flex-1 overflow-y-auto [overflow-anchor:auto]">
-              {cols[c.key].length === 0 ? (
+              {!cols[c.key]?.length ? (
                 <p className="p-4 text-xs text-muted-foreground">
                   {c.key === "new" ? "Waiting for the next launch…" : c.key === "final_stretch" ? "No curve is past the Final Stretch threshold yet. Curve progress updates only for markets with live swaps." : "No verified migrations observed since the service started."}
                 </p>
               ) : (
-                cols[c.key].map((m) => <MarketRow key={m.id} m={m} reference={feed.reference} now={now} />)
+                cols[c.key]!.map((m) => <MarketRow key={m.id} m={m} reference={feed.reference} now={now} />)
               )}
             </div>
           </section>

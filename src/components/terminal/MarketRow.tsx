@@ -16,6 +16,7 @@ function useFlash(v: number | null) {
       return () => clearTimeout(t);
     }
     prev.current = v;
+    return undefined;
   }, [v]);
   return cls;
 }

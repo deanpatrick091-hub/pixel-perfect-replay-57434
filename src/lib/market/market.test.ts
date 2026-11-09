@@ -41,7 +41,7 @@ describe("candles", () => {
     const c = new CandleBuilder();
     expect(c.add(ev("a", 1000, 1))).toBe(true);
     expect(c.add(ev("a", 1000, 1))).toBe(false);
-    expect(c.candles(1)[0].v).toBe(1);
+    expect(c.candles(1)[0]!.v).toBe(1);
   });
 
   it("keeps correct open/close when events arrive out of order", () => {

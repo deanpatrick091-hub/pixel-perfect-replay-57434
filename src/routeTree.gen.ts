@@ -10,7 +10,9 @@
 
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as IndexRouteImport } from './routes/index'
+import { Route as AuthRouteImport } from './routes/auth'
 import { Route as PortfolioRouteImport } from './routes/portfolio'
+import { Route as StatusRouteImport } from './routes/status'
 import { Route as MMarketIdRouteImport } from './routes/m.$marketId'
 import { Route as ApiPublicWorkerIngestRouteImport } from './routes/api/public/worker-ingest'
 
@@ -19,9 +21,19 @@ const IndexRoute = IndexRouteImport.update({
   path: '/',
   getParentRoute: () => rootRouteImport,
 } as any)
+const AuthRoute = AuthRouteImport.update({
+  id: '/auth',
+  path: '/auth',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const PortfolioRoute = PortfolioRouteImport.update({
   id: '/portfolio',
   path: '/portfolio',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const StatusRoute = StatusRouteImport.update({
+  id: '/status',
+  path: '/status',
   getParentRoute: () => rootRouteImport,
 } as any)
 const MMarketIdRoute = MMarketIdRouteImport.update({
@@ -37,39 +49,61 @@ const ApiPublicWorkerIngestRoute = ApiPublicWorkerIngestRouteImport.update({
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
+  '/auth': typeof AuthRoute
   '/portfolio': typeof PortfolioRoute
+  '/status': typeof StatusRoute
   '/m/$marketId': typeof MMarketIdRoute
   '/api/public/worker-ingest': typeof ApiPublicWorkerIngestRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
+  '/auth': typeof AuthRoute
   '/portfolio': typeof PortfolioRoute
+  '/status': typeof StatusRoute
   '/m/$marketId': typeof MMarketIdRoute
   '/api/public/worker-ingest': typeof ApiPublicWorkerIngestRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
+  '/auth': typeof AuthRoute
   '/portfolio': typeof PortfolioRoute
+  '/status': typeof StatusRoute
   '/m/$marketId': typeof MMarketIdRoute
   '/api/public/worker-ingest': typeof ApiPublicWorkerIngestRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
-  fullPaths: '/' | '/portfolio' | '/m/$marketId' | '/api/public/worker-ingest'
+  fullPaths:
+    | '/'
+    | '/auth'
+    | '/portfolio'
+    | '/status'
+    | '/m/$marketId'
+    | '/api/public/worker-ingest'
   fileRoutesByTo: FileRoutesByTo
-  to: '/' | '/portfolio' | '/m/$marketId' | '/api/public/worker-ingest'
+  to:
+    | '/'
+    | '/auth'
+    | '/portfolio'
+    | '/status'
+    | '/m/$marketId'
+    | '/api/public/worker-ingest'
   id:
     | '__root__'
     | '/'
+    | '/auth'
     | '/portfolio'
+    | '/status'
     | '/m/$marketId'
     | '/api/public/worker-ingest'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
+  AuthRoute: typeof AuthRoute
   PortfolioRoute: typeof PortfolioRoute
+  StatusRoute: typeof StatusRoute
   MMarketIdRoute: typeof MMarketIdRoute
   ApiPublicWorkerIngestRoute: typeof ApiPublicWorkerIngestRoute
 }
@@ -83,11 +117,25 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof IndexRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/auth': {
+      id: '/auth'
+      path: '/auth'
+      fullPath: '/auth'
+      preLoaderRoute: typeof AuthRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/portfolio': {
       id: '/portfolio'
       path: '/portfolio'
       fullPath: '/portfolio'
       preLoaderRoute: typeof PortfolioRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/status': {
+      id: '/status'
+      path: '/status'
+      fullPath: '/status'
+      preLoaderRoute: typeof StatusRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/m/$marketId': {
@@ -109,7 +157,9 @@ declare module '@tanstack/react-router' {
 
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
+  AuthRoute: AuthRoute,
   PortfolioRoute: PortfolioRoute,
+  StatusRoute: StatusRoute,
   MMarketIdRoute: MMarketIdRoute,
   ApiPublicWorkerIngestRoute: ApiPublicWorkerIngestRoute,
 }
