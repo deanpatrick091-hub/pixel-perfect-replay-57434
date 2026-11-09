@@ -116,7 +116,7 @@ function Discover() {
                   {c.key === "new" ? "Waiting for the next launch…" : c.key === "final_stretch" ? "No curve is past the Final Stretch threshold yet. Curve progress updates only for markets with live swaps." : "No verified migrations observed since the service started."}
                 </p>
               ) : (
-                cols[c.key].map((m) => <MarketRow key={m.id} m={m} ref={feed.reference} now={now} />)
+                cols[c.key].map((m) => <MarketRow key={m.id} m={m} reference={feed.reference} now={now} />)
               )}
             </div>
           </section>

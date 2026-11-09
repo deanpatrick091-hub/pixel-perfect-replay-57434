@@ -20,7 +20,7 @@ function useFlash(v: number | null) {
   return cls;
 }
 
-export const MarketRow = memo(function MarketRow({ m, ref: reference, now }: { m: MarketSummary; ref: Reference | null; now: number }) {
+export const MarketRow = memo(function MarketRow({ m, reference, now }: { m: MarketSummary; reference: Reference | null; now: number }) {
   const u = marketUsd(m, reference);
   const flash = useFlash(m.priceQuote);
   const s = m.stats?.["5m"];
