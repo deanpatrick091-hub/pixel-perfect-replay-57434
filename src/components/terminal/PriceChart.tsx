@@ -6,8 +6,16 @@ import { cn } from "@/lib/utils";
 
 export const TIMEFRAMES = ["1s", "5s", "15s", "1m", "5m", "15m", "1h", "4h", "1D"] as const;
 
+// The chart library only understands rgb/hex, so resolve theme tokens (oklch) through a canvas.
 function cssVar(name: string) {
-  return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+  const raw = getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+  const ctx = document.createElement("canvas").getContext("2d", { willReadFrequently: true });
+  if (!ctx) return "#888888";
+  ctx.fillStyle = raw;
+  ctx.fillRect(0, 0, 1, 1);
+  const [r, g, b] = ctx.getImageData(0, 0, 1, 1).data;
+  const hex = (n: number | undefined) => (n ?? 0).toString(16).padStart(2, "0");
+  return `#${hex(r)}${hex(g)}${hex(b)}`;
 }
 
 export function PriceChart({ marketId, quoteCcy, tick }: { marketId: string; quoteCcy: string; tick: number }) {
