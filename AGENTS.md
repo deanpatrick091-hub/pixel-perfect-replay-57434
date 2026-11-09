@@ -28,3 +28,10 @@ use the editor.
   own key and store it in Secrets.
 - **Secrets.** Lovable manages them. Do not put secret values in the repo.
 <!-- LOVABLE:END -->
+
+## Architecture
+- Upstream market feeds live only in `worker/` (always-on Node service, deployed separately); never connect to PumpPortal or other paid feeds from the browser or server functions — they need persistent sockets and keys stay server-side.
+- The worker pushes executable market state to `/api/public/worker-ingest` (shared-secret gated); the site discovers the worker's public URL from `worker_status` heartbeats, so the frontend has no feed config.
+- All paper-trading money movement happens inside SQL functions (`place_market_order`, `reset_paper_account`) with a per-user row lock and idempotency keys; users can only read their tables (RLS).
+- Quote math and candle aggregation live in `src/lib/market/`, shared by the UI and the worker; keep them dependency-free.
+- Never render invented tokens, prices or candles; show an explicit unavailable/setup state instead.
