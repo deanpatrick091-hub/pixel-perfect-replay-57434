@@ -54,6 +54,22 @@ function status() {
   };
 }
 
+// Token metadata URIs point to JSON; resolve the image field (best effort, bounded).
+let metaInFlight = 0;
+async function resolveImage(m: Market) {
+  const uri = m.imageUri;
+  if (!uri || !/^https?:\/\//.test(uri) || metaInFlight > 8) { if (uri && !/^https?:/.test(uri)) m.imageUri = null; return; }
+  metaInFlight++;
+  try {
+    const ctl = AbortSignal.timeout(4000);
+    const r = await fetch(uri, { signal: ctl });
+    const ct = r.headers.get("content-type") ?? "";
+    if (ct.startsWith("image/")) return;
+    const j: any = await r.json();
+    m.imageUri = typeof j?.image === "string" && /^https?:\/\//.test(j.image) ? j.image : null;
+  } catch { m.imageUri = null; } finally { metaInFlight--; store.markDirty(m.id); }
+}
+
 async function resolveDestination(curve: Market, attempt = 0) {
   const delays = [5_000, 20_000, 60_000, 180_000, 600_000];
   const pairs = await tokenPairs(curve.mint);
@@ -85,6 +101,7 @@ pump.start({
   onLaunch(l) {
     const m = store.upsertLaunch(l, tradeSubsEnabled() ? "live" : "unavailable");
     subscribe(m.mint);
+    resolveImage(m);
     if (!pump.isSubscribed(m.mint) && m.tradeFeed === "live") { m.tradeFeed = "unavailable"; store.markDirty(m.id); }
   },
   onSwap(s) { store.addSwap(s); },
