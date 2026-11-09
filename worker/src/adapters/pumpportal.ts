@@ -1,5 +1,5 @@
 import WebSocket from "ws";
-import { config, tradeSubsEnabled } from "../config.ts";
+import { config, runtime, tradeSubsEnabled } from "../config.ts";
 import { log } from "../log.ts";
 import { pumpCurveProgress, PUMP_CURVE } from "../../../src/lib/market/quote.ts";
 import type { AdapterHandlers, MarketAdapter } from "./types.ts";
@@ -60,7 +60,13 @@ export class PumpPortalAdapter implements MarketAdapter {
     const now = Date.now();
     this.s.lastEventAt = now;
     if (m.message || m.errors) {
-      log("info", "pumpportal notice", { message: m.message ?? m.errors });
+      const note = String(m.message ?? m.errors);
+      log("info", "pumpportal notice", { message: note });
+      if (/only available when connecting with an API key/i.test(note) && !runtime.tradesRejected) {
+        runtime.tradesRejected = note;
+        log("warn", "trade subscriptions rejected upstream; paper execution disabled", { note });
+        this.h.onStatus({ connected: this.s.connected, reason: "trades_rejected" });
+      }
       return;
     }
     const tx = m.txType;

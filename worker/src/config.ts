@@ -14,4 +14,5 @@ export const config = {
   workerId: env.WORKER_ID ?? "primary",
 };
 
-export const tradeSubsEnabled = () => Boolean(config.pumpPortalKey) || config.tradeSubsWithoutKey;
+export const runtime = { tradesRejected: null as string | null };
+export const tradeSubsEnabled = () => (Boolean(config.pumpPortalKey) || config.tradeSubsWithoutKey) && !runtime.tradesRejected;

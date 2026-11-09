@@ -1,4 +1,4 @@
-import { config, tradeSubsEnabled } from "./config.ts";
+import { config, runtime, tradeSubsEnabled } from "./config.ts";
 import { log } from "./log.ts";
 import { PumpPortalAdapter } from "./adapters/pumpportal.ts";
 import { Store, marketId, type Market } from "./store.ts";
@@ -33,7 +33,7 @@ function subscribe(mint: string) {
 }
 
 function coverage() {
-  const trades = tradeSubsEnabled()
+  const trades = runtime.tradesRejected ? `rejected by PumpPortal: ${runtime.tradesRejected}` : tradeSubsEnabled()
     ? `live for up to ${config.maxTradeSubs} subscribed mints (metered)`
     : "unavailable — set PUMPPORTAL_API_KEY to enable";
   return {
@@ -110,7 +110,12 @@ pump.start({
     if (curve) resolveDestination(curve);
     else log("info", "migration for untracked mint", { mint: mg.mint });
   },
-  onStatus(s) { upstreamConnected = s.connected; },
+  onStatus(s) {
+    upstreamConnected = s.connected;
+    if (s.reason === "trades_rejected") {
+      for (const m of store.markets.values()) if (m.status === "active" && m.tradeFeed !== "unavailable") { m.tradeFeed = "unavailable"; store.markDirty(m.id); }
+    }
+  },
 });
 startSolUsd();
 const server = startServer(store, status, (v) => {
