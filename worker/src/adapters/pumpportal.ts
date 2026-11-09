@@ -91,7 +91,7 @@ export class PumpPortalAdapter implements MarketAdapter {
       }
       return;
     }
-    if (tx === "migrate" || (m.mint && m.pool && !tx && m.signature)) {
+    if (tx === "migrate" && m.mint) {
       this.s.migrations++;
       this.h.onMigration({ chain: "solana", fromVenue: "pumpfun", mint: m.mint, signature: m.signature ?? null, destinationHint: m.pool ?? null, receivedAt: now });
       return;
