@@ -1,0 +1,13 @@
+{
+  "version": "7",
+  "dialect": "postgresql",
+  "entries": [
+    {
+      "idx": 0,
+      "version": "7",
+      "when": 1794255532243,
+      "tag": "0000_paper_trading_core",
+      "breakpoints": true
+    }
+  ]
+}
