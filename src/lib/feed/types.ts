@@ -40,3 +40,9 @@ export function marketUsd(m: MarketSummary, ref: Reference | null) {
     volUsd: (w: keyof NonNullable<MarketSummary["stats"]>) => (m.stats && q ? m.stats[w].volumeQuote * q : null),
   };
 }
+
+export type HistoryState = "ok" | "empty" | "loading" | "rate_limited" | "unavailable" | "unsupported";
+export interface ChartHistory {
+  market: string; tf: string; source: string; state: HistoryState; refreshing?: boolean; candles: Candle[]; swaps: number;
+  fetchedAt: number | null; error: string | null; scannedTransactions?: number; oldestTs?: number | null; newestTs?: number | null; ttlSec?: number;
+}
