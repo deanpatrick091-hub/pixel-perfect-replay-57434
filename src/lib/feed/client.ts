@@ -172,6 +172,16 @@ class FeedClient {
     return (await r.json()) as { candles: import("./types").Candle[]; note: string; historyFrom: number | null; quoteCcy: string | null };
   }
 
+  /** Read-only on-chain 1m history (chart only). Returns null on network failure so callers keep old data. */
+  async history(id: string) {
+    if (!this.workerUrl) return null;
+    try {
+      const r = await fetch(`${this.workerUrl}/api/history?market=${encodeURIComponent(id)}&tf=1m`);
+      if (!r.ok) return null;
+      return (await r.json()) as import("./types").ChartHistory;
+    } catch { return null; }
+  }
+
   watch(topic: string) {
     const n = this.topics.get(topic) ?? 0;
     this.topics.set(topic, n + 1);
