@@ -15,7 +15,7 @@ const MAX_ENTRIES = 40;
 export type HistoryState = "ok" | "empty" | "loading" | "rate_limited" | "unavailable" | "unsupported";
 
 interface Entry {
-  marketId: string; swaps: Map<string, VerifiedSwap>; builder: CandleBuilder; newestSig: string | null;
+  marketId: string; swaps: Map<string, VerifiedSwap>; processed: Set<string>; builder: CandleBuilder; newestSig: string | null;
   scanned: number; rejected: number; fetchedAt: number | null; attemptedAt: number; state: HistoryState; error: string | null;
   inflight: Promise<void> | null; lastUsed: number;
 }
@@ -25,7 +25,7 @@ export const historyStats = { refreshes: 0, failures: 0, swapsDecoded: 0, entrie
 function entry(id: string): Entry {
   let e = cache.get(id);
   if (!e) {
-    e = { marketId: id, swaps: new Map(), builder: new CandleBuilder(20_000, 86_400), newestSig: null, scanned: 0, rejected: 0,
+    e = { marketId: id, swaps: new Map(), processed: new Set(), builder: new CandleBuilder(20_000, 86_400), newestSig: null, scanned: 0, rejected: 0,
       fetchedAt: null, attemptedAt: 0, state: "loading", error: null, inflight: null, lastUsed: Date.now() };
     cache.set(id, e);
     if (cache.size > MAX_ENTRIES) {
@@ -46,9 +46,10 @@ async function refresh(e: Entry, m: Market) {
     const sigs = await rpc<{ signature: string; slot: number; err: unknown; blockTime: number | null; transactionIndex?: number }[]>("getSignaturesForAddress", [m.address, params]);
     const ok = sigs.filter((s) => s.err == null);
     for (const s of [...ok].reverse()) { // oldest first
-      if ([...e.swaps.keys()].some((k) => k.startsWith(s.signature + ":"))) continue;
+      if (e.processed.has(s.signature)) continue; // resume after a partial (rate-limited) refresh
       const tx = await rpc<any>("getTransaction", [s.signature, { encoding: "json", maxSupportedTransactionVersion: 1, commitment: "confirmed" }]);
       e.scanned++;
+      e.processed.add(s.signature);
       const swaps = extractSwaps(tx, s.signature, m.address, m.mint, s.transactionIndex ?? tx?.transactionIndex ?? null);
       if (!swaps.length) e.rejected++;
       for (const w of swaps) {

@@ -14,7 +14,7 @@ export const config = {
   finalStretch: Number(env.FINAL_STRETCH_THRESHOLD ?? 0.7),
   // Free public mainnet RPC by default (https://solana.com/docs/references/clusters); override server-side.
   solanaRpcUrl: env.SOLANA_RPC_URL || "https://api.mainnet-beta.solana.com",
-  rpcMaxRps: Number(env.SOLANA_RPC_MAX_RPS ?? 3),
+  rpcMaxRps: Number(env.SOLANA_RPC_MAX_RPS ?? 1.5),
   workerId: env.WORKER_ID ?? "primary",
 };
 
