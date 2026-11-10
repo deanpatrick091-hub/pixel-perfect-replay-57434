@@ -44,3 +44,12 @@ node --env-file=.env --import tsx src/index.ts
 Swap events from PumpPortal carry no block timestamp or instruction index; the worker records
 receipt time and uses `signature + market` as event identity. Listing coverage and timing will
 differ from Axiom, FOMO and DEX Screener.
+
+## Chart history (free, read-only)
+Opened Pump.fun bonding-curve markets get 1m candles from recent on-chain swaps via Solana JSON-RPC
+(`getSignaturesForAddress` on the verified curve PDA + `getTransaction`, decoding official Pump `TradeEvent`s).
+Only markets someone is viewing are refreshed (20s cache, deduplicated, ~1.5 req/s global budget, backoff on 429/403).
+This data is never used for quotes or paper execution.
+- `SOLANA_RPC_URL` (optional) — defaults to the free public `https://api.mainnet-beta.solana.com`.
+- `SOLANA_RPC_MAX_RPS` (optional, default 1.5).
+Endpoint: `GET /api/history?market=<id>&tf=1m`.
