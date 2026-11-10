@@ -25,6 +25,7 @@ export function PriceChart({ marketId, quoteCcy, tick }: { marketId: string; quo
   const [hist, setHist] = useState<ChartHistory | null>(null);
   const [histNetErr, setHistNetErr] = useState(false);
   const [histTick, setHistTick] = useState(0);
+  const drewHist = useRef(false);
   const [count, setCount] = useState<number | null>(null);
   const [note, setNote] = useState<string>("");
   const [ready, setReady] = useState(false);
@@ -71,7 +72,8 @@ export function PriceChart({ marketId, quoteCcy, tick }: { marketId: string; quo
     if (!fitted.current && list.length) { api.current.chart.timeScale().fitContent(); fitted.current = true; }
   };
 
-  useEffect(() => { setHist(null); setHistNetErr(false); }, [marketId]);
+  useEffect(() => { setHist(null); setHistNetErr(false); drewHist.current = false; }, [marketId]);
+  useEffect(() => { drewHist.current = false; }, [tf]);
 
   // Live candles (non-1m timeframes) from swaps the worker streams.
   useEffect(() => {
@@ -98,8 +100,8 @@ export function PriceChart({ marketId, quoteCcy, tick }: { marketId: string; quo
       else {
         setHistNetErr(false);
         setHist((prev) => (res.candles.length || !prev?.candles.length ? res : { ...res, candles: prev.candles }));
-        if (res.candles.length) draw(res.candles);
-        else if (!hist?.candles.length) draw([]);
+        if (res.candles.length) { draw(res.candles); drewHist.current = true; }
+        else if (!drewHist.current) draw([]);
       }
       const busy = !res || res.state === "loading" || res.refreshing;
       setTimeout(() => { if (!cancelled) setHistTick((n) => n + 1); }, busy ? 4000 : 15000);
