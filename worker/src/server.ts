@@ -4,6 +4,7 @@ import { INTERVALS } from "../../src/lib/market/candles.ts";
 import { config } from "./config.ts";
 import { solUsd, solUsdFresh } from "./solusd.ts";
 import type { Market, Store } from "./store.ts";
+import { history } from "./history/service.ts";
 
 const PUMP_INITIAL_VIRTUAL_SOL = 30;
 
@@ -75,6 +76,14 @@ export function startServer(store: Store, statusFn: () => Record<string, unknown
         historyFrom: m ? Math.floor(m.launchedAt / 1000) : null,
         note: "Built only from swaps observed live by this worker since it started tracking the market. Earlier history is not shown.",
       });
+    }
+    if (p === "/api/history") {
+      // Read-only chart history from public Solana RPC; never used for quotes or paper execution.
+      const id = u.searchParams.get("market") ?? "";
+      const tf = u.searchParams.get("tf") ?? "1m";
+      if (tf !== "1m") return json(req, res, 400, { error: "on-chain history currently supports 1m only" });
+      const h = history(store.markets.get(id), id, 60);
+      return json(req, res, 200, { market: id, tf, quoteCcy: "SOL", source: "solana-rpc:pump-trade-event", ...h });
     }
     json(req, res, 404, { error: "not found" });
   });
