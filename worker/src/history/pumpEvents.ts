@@ -54,11 +54,11 @@ export function decodeTradeEvent(data: Buffer): DecodedTrade | null {
 
 export interface VerifiedSwap {
   id: string; signature: string; eventIndex: number; slot: number; blockTime: number; side: "buy" | "sell";
-  baseQty: number; quoteQty: number; price: number; trader: string;
+  baseQty: number; quoteQty: number; price: number; trader: string; orderKey: string;
 }
 
 /** Extract only validated Pump TradeEvents for (curve, mint) from a getTransaction(json, v0) result. */
-export function extractSwaps(tx: any, signature: string, curve: string, mint: string): VerifiedSwap[] {
+export function extractSwaps(tx: any, signature: string, curve: string, mint: string, txIndex: number | null = null): VerifiedSwap[] {
   if (!tx || !tx.meta || tx.meta.err != null || typeof tx.blockTime !== "number") return [];
   const msg = tx.transaction?.message;
   const keys: string[] = [...(msg?.accountKeys ?? []), ...(tx.meta.loadedAddresses?.writable ?? []), ...(tx.meta.loadedAddresses?.readonly ?? [])];
@@ -91,7 +91,8 @@ export function extractSwaps(tx: any, signature: string, curve: string, mint: st
       if (ev.quoteMint && ev.quoteMint !== DEFAULT_PK && ev.quoteMint !== WSOL) return;
       if (ev.solLamports <= 0n || ev.tokenRaw <= 0n) return;
       const quoteQty = Number(ev.solLamports) / 1e9, baseQty = Number(ev.tokenRaw) / 10 ** decimals;
-      out.push({ id: `${signature}:${idx}`, signature, eventIndex: idx, slot: tx.slot, blockTime: tx.blockTime, side: ev.isBuy ? "buy" : "sell", baseQty, quoteQty, price: quoteQty / baseQty, trader: ev.user });
+      out.push({ id: `${signature}:${idx}`, signature, eventIndex: idx, slot: tx.slot, blockTime: tx.blockTime, side: ev.isBuy ? "buy" : "sell", baseQty, quoteQty, price: quoteQty / baseQty, trader: ev.user,
+        orderKey: `${String(tx.slot).padStart(12, "0")}:${String(txIndex ?? 99999).padStart(5, "0")}:${String(idx).padStart(3, "0")}` });
       idx++;
     });
   }

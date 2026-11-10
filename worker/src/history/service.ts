@@ -6,6 +6,7 @@ import type { Market } from "../store.ts";
 
 // Read-only chart history for viewed Pump.fun curves, from public Solana RPC.
 // Kept entirely separate from the Store: it never touches executable state, quotes or paper orders.
+// Candle open/close tie-breaks use orderKey = slot · transactionIndex · eventIndex (true chain order).
 const TTL_MS = 20_000;
 const FIRST_PAGE = 60;      // transactions decoded on first view
 const INCREMENTAL_PAGE = 40; // newer transactions decoded per refresh
@@ -42,18 +43,18 @@ async function refresh(e: Entry, m: Market) {
     const limit = e.newestSig ? INCREMENTAL_PAGE : FIRST_PAGE;
     const params: Record<string, unknown> = { limit, commitment: "confirmed" };
     if (e.newestSig) params.until = e.newestSig;
-    const sigs = await rpc<{ signature: string; slot: number; err: unknown; blockTime: number | null }[]>("getSignaturesForAddress", [m.address, params]);
+    const sigs = await rpc<{ signature: string; slot: number; err: unknown; blockTime: number | null; transactionIndex?: number }[]>("getSignaturesForAddress", [m.address, params]);
     const ok = sigs.filter((s) => s.err == null);
     for (const s of [...ok].reverse()) { // oldest first
       if ([...e.swaps.keys()].some((k) => k.startsWith(s.signature + ":"))) continue;
-      const tx = await rpc<any>("getTransaction", [s.signature, { encoding: "json", maxSupportedTransactionVersion: 0, commitment: "confirmed" }]);
+      const tx = await rpc<any>("getTransaction", [s.signature, { encoding: "json", maxSupportedTransactionVersion: 1, commitment: "confirmed" }]);
       e.scanned++;
-      const swaps = extractSwaps(tx, s.signature, m.address, m.mint);
+      const swaps = extractSwaps(tx, s.signature, m.address, m.mint, s.transactionIndex ?? tx?.transactionIndex ?? null);
       if (!swaps.length) e.rejected++;
       for (const w of swaps) {
         if (e.swaps.has(w.id)) continue;
         e.swaps.set(w.id, w);
-        e.builder.add({ id: w.id, ts: w.blockTime * 1000, price: w.price, baseQty: w.baseQty, quoteQty: w.quoteQty, side: w.side });
+        e.builder.add({ id: w.orderKey, ts: w.blockTime * 1000, price: w.price, baseQty: w.baseQty, quoteQty: w.quoteQty, side: w.side });
         historyStats.swapsDecoded++;
       }
     }
