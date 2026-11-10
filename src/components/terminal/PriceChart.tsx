@@ -24,11 +24,12 @@ export function PriceChart({ marketId, quoteCcy, tick }: { marketId: string; quo
   const [tf, setTf] = useState<(typeof TIMEFRAMES)[number]>("15s");
   const [count, setCount] = useState<number | null>(null);
   const [note, setNote] = useState<string>("");
+  const [ready, setReady] = useState(false);
+  const [chartError, setChartError] = useState(false);
   const fitted = useRef(false);
 
   useEffect(() => {
     let disposed = false;
-    let ro: ResizeObserver | null = null;
     void import("lightweight-charts").then((lc) => {
       if (disposed || !el.current) return;
       const fg = cssVar("--muted-foreground");
@@ -50,14 +51,17 @@ export function PriceChart({ marketId, quoteCcy, tick }: { marketId: string; quo
       const volume = chart.addSeries(lc.HistogramSeries, { priceScaleId: "vol", priceFormat: { type: "volume" } });
       chart.priceScale("vol").applyOptions({ scaleMargins: { top: 0.82, bottom: 0 } });
       api.current = { chart, candles, volume };
-      ro = new ResizeObserver(() => {});
+      setReady(true);
+    }).catch(() => {
+      if (!disposed) setChartError(true);
     });
-    return () => { disposed = true; ro?.disconnect(); api.current?.chart.remove(); api.current = null; };
+    return () => { disposed = true; api.current?.chart.remove(); api.current = null; };
   }, []);
 
   useEffect(() => { fitted.current = false; }, [tf, marketId]);
 
   useEffect(() => {
+    if (!ready) return;
     let cancelled = false;
     const t = setTimeout(async () => {
       const res = await feed.candles(marketId, tf);
@@ -70,10 +74,10 @@ export function PriceChart({ marketId, quoteCcy, tick }: { marketId: string; quo
       if (!fitted.current && res.candles.length) { api.current.chart.timeScale().fitContent(); fitted.current = true; }
     }, 250);
     return () => { cancelled = true; clearTimeout(t); };
-  }, [marketId, tf, tick]);
+  }, [marketId, tf, tick, ready]);
 
   return (
-    <div className="flex h-full min-h-0 flex-col">
+    <div className="flex h-full min-h-[320px] flex-col">
       <div className="flex items-center gap-1 border-b border-border px-2 py-1">
         {TIMEFRAMES.map((t) => (
           <button key={t} onClick={() => setTf(t)} aria-pressed={tf === t}
@@ -83,9 +87,10 @@ export function PriceChart({ marketId, quoteCcy, tick }: { marketId: string; quo
         ))}
         <span className="ml-auto text-[11px] text-muted-foreground">Price in {quoteCcy} · scroll to zoom, drag to pan</span>
       </div>
-      <div className="relative min-h-0 flex-1">
+      <div className="relative min-h-[280px] flex-1">
         <div ref={el} className="absolute inset-0" />
-        {count === 0 && (
+        {chartError && <div role="status" className="p-6 text-center text-xs text-muted-foreground">Chart failed to load. Refresh to try again.</div>}
+        {!chartError && count === 0 && (
           <div className="pointer-events-none absolute inset-0 grid place-items-center p-6 text-center text-xs text-muted-foreground">
             <div>No swaps observed for this market yet.<br />{note}</div>
           </div>
