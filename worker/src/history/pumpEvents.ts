@@ -53,7 +53,7 @@ export function decodeTradeEvent(data: Buffer): DecodedTrade | null {
 }
 
 export interface VerifiedSwap {
-  /** Unique identity: signature + event index within that transaction. Never used for ordering. */
+  /** Unique identity: signature + inner-instruction position (group.index.position). Never used for ordering. */
   id: string; signature: string; eventIndex: number; slot: number; blockTime: number; side: "buy" | "sell";
   baseQty: number; quoteQty: number; price: number; trader: string;
 }
@@ -72,12 +72,12 @@ export function extractSwaps(tx: any, signature: string, curve: string, mint: st
   const decimals = bal?.uiTokenAmount?.decimals;
   if (decimals !== 6) return none("bad_decimals");
   const out: VerifiedSwap[] = [];
-  const seen = new Set<string>();
-  let rejected = 0, idx = 0;
+  let rejected = 0, pos = 0;
   for (const group of tx.meta.innerInstructions ?? []) {
     const top = msg.instructions?.[group.index];
     const list: any[] = group.instructions ?? [];
     list.forEach((ix, i) => {
+      const at = pos++; // position across all inner instructions: event order within the transaction
       if (keys[ix.programIdIndex] !== PUMP_PROGRAM) return;
       let data: Buffer;
       try { data = Buffer.from(bs58.decode(ix.data)); } catch { return; }
@@ -98,14 +98,11 @@ export function extractSwaps(tx: any, signature: string, curve: string, mint: st
       if (ev.mint !== mint) return reject();
       if (ev.quoteMint && ev.quoteMint !== DEFAULT_PK && ev.quoteMint !== WSOL) return reject();
       if (ev.solLamports <= 0n || ev.tokenRaw <= 0n) return reject();
-      const dupKey = data.toString("hex");
-      if (seen.has(dupKey)) return reject(); // byte-identical event repeated in one tx
-      seen.add(dupKey);
+      // Identity is the instruction position, not the bytes: two distinct positions may carry identical events.
       const quoteQty = Number(ev.solLamports) / 1e9, baseQty = Number(ev.tokenRaw) / 10 ** decimals;
       const price = quoteQty / baseQty;
       if (!Number.isFinite(price) || price <= 0) return reject();
-      out.push({ id: `${signature}:${idx}`, signature, eventIndex: idx, slot: tx.slot, blockTime: tx.blockTime, side: ev.isBuy ? "buy" : "sell", baseQty, quoteQty, price, trader: ev.user });
-      idx++;
+      out.push({ id: `${signature}:${group.index}.${i}`, signature, eventIndex: at, slot: tx.slot, blockTime: tx.blockTime, side: ev.isBuy ? "buy" : "sell", baseQty, quoteQty, price, trader: ev.user });
     });
   }
   return { swaps: out, rejectedEvents: rejected, reason: out.length ? "ok" : "no_events" };

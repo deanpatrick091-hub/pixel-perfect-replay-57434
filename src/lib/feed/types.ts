@@ -46,6 +46,9 @@ export type HistoryState = "ok" | "partial" | "empty" | "loading" | "rate_limite
 export interface ChartHistory {
   market: string; tf: string; source: string; delivery?: "polled"; state: HistoryState; refreshing?: boolean; candles: Candle[]; swaps: number;
   lastSuccessAt: number | null; completedAt: number | null; error: string | null; failureAt?: number | null;
+  /** lastSuccessAt = last successful RPC contact; lastDataAt = last time new swaps were added to the candles. */
+  lastDataAt?: number | null; retryAt?: number | null; coverage?: "in_progress" | "complete" | "incomplete";
   scannedTransactions?: number; pendingTransactions?: number; missingTransactions?: number; rejectedEvents?: number;
+  transportFailedTransactions?: number; droppedTransactions?: number; scanGaps?: number; trimmedSwaps?: number; trimmedBeforeTs?: number | null;
   oldestTs?: number | null; newestTs?: number | null; curveStatus?: "active" | "migrated" | "retired"; windowSignatures?: number; ttlSec?: number;
 }

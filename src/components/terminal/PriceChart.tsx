@@ -106,15 +106,30 @@ export function PriceChart({ marketId, quoteCcy, tick, liveTrades }: { marketId:
     if (!h) return hist.netErr ? { tone: "warn", text: "Market service unreachable · retrying" } : { tone: "muted", text: "Loading on-chain history…" };
     if (historyOff) return { tone: "muted", text: h.error ?? "On-chain history not available for this market." };
     const range = h.oldestTs && h.newestTs ? ` · swaps ${new Date(h.oldestTs * 1000).toLocaleTimeString()}–${new Date(h.newestTs * 1000).toLocaleTimeString()}` : "";
-    const base = `Polled history (not tick streaming) · Solana RPC · Pump trade events · ${h.swaps} swaps${range} · last RPC success ${clock(h.lastSuccessAt)}`;
+    const data = h.lastDataAt ? ` · candles updated ${clock(h.lastDataAt)}` : "";
+    const base = `Polled history (not tick streaming) · Solana RPC · Pump trade events · ${h.swaps} swaps${range}${data} · last RPC contact ${clock(h.lastSuccessAt)}`;
     const stale = hist.netErr ? `Market service unreachable · showing snapshot from ${clock(h.lastSuccessAt)} · ` : "";
+    const kept = hist.latest ? `Latest attempt: ${hist.latest.state.replace("_", " ")}${hist.latest.error ? ` (${hist.latest.error})` : ""} · showing previous snapshot · ` : "";
     const curve = h.curveStatus && h.curveStatus !== "active" ? "Curve completed — these are its pre-migration swaps; the destination pool isn't charted · " : "";
-    const gap = h.missingTransactions ? ` · ${h.missingTransactions} transactions unavailable from RPC` : "";
-    if (h.state === "rate_limited") return { tone: "warn", text: `${stale}${curve}Rate limited by Solana RPC — retrying · ${base}${gap}` };
-    if (h.state === "unavailable") return { tone: "warn", text: `${stale}${curve}Solana RPC request failed — retrying · ${base}${gap}` };
+    const parts = [
+      h.transportFailedTransactions ? `${h.transportFailedTransactions} transactions failed to load` : "",
+      h.missingTransactions ? `${h.missingTransactions} not returned by RPC` : "",
+      h.droppedTransactions ? `${h.droppedTransactions} skipped (backlog limit)` : "",
+      h.scanGaps ? `${h.scanGaps} activity gap${h.scanGaps > 1 ? "s" : ""} (too busy to scan fully)` : "",
+      h.trimmedSwaps ? `${h.trimmedSwaps} older swaps trimmed${h.trimmedBeforeTs ? ` before ${new Date(h.trimmedBeforeTs * 1000).toLocaleTimeString()}` : ""}` : "",
+      h.rejectedEvents ? `${h.rejectedEvents} events rejected` : "",
+    ].filter(Boolean);
+    const gap = parts.length ? ` · ${parts.join(" · ")}` : "";
+    const refreshing = h.refreshing ? " · refreshing" : "";
+    const pre = `${stale}${kept}${curve}`;
+    if (h.state === "rate_limited") return { tone: "warn", text: `${pre}Rate limited by Solana RPC — retrying${h.retryAt ? ` after ${clock(h.retryAt)}` : ""} · ${base}${gap}` };
+    if (h.state === "unavailable") return { tone: "warn", text: `${pre}Solana RPC request failed — retrying · ${base}${gap}` };
     if (h.state === "loading") return { tone: "muted", text: "Loading recent swaps from Solana RPC…" };
-    if (h.state === "partial") return { tone: hist.netErr ? "warn" : "muted", text: `${stale}${curve}Scanning · ${h.pendingTransactions ?? 0} transactions left · ${base}${gap}` };
-    return { tone: hist.netErr ? "warn" : "muted", text: `${stale}${curve}${base} · scan complete ${clock(h.completedAt)}${gap}` };
+    if (h.state === "partial") {
+      const what = (h.pendingTransactions ?? 0) > 0 ? `Scanning · ${h.pendingTransactions} transactions left` : "Incomplete coverage";
+      return { tone: hist.netErr || hist.latest || parts.length ? "warn" : "muted", text: `${pre}${what}${refreshing} · ${base}${gap}` };
+    }
+    return { tone: hist.netErr || hist.latest ? "warn" : "muted", text: `${pre}${base} · scan complete ${clock(h.completedAt)}${refreshing}${gap}` };
   })();
 
   const emptyMsg = (() => {
@@ -125,6 +140,7 @@ export function PriceChart({ marketId, quoteCcy, tick, liveTrades }: { marketId:
     if (h.state === "empty") return <>No successful swaps found in this curve's {h.windowSignatures ?? "recent"} most recent transactions.</>;
     if (h.state === "rate_limited") return <>Solana RPC is rate limiting requests. Candles appear once it allows more.</>;
     if (h.state === "unavailable") return <>On-chain history could not be loaded. Retrying automatically.</>;
+    if (h.state === "partial" && !(h.pendingTransactions ?? 0)) return <>No verified swaps decoded yet — some transactions couldn't be loaded or verified, so this isn't proof the curve had none.</>;
     return <>Loading recent swaps…</>;
   })();
 

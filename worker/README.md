@@ -50,7 +50,8 @@ Opened Pump.fun bonding-curve markets get candles from recent on-chain swaps via
 (`getSignaturesForAddress` on the verified curve PDA + `getTransaction`, decoding official Pump `TradeEvent` self-CPIs).
 - First view scans only the 100 most recent signatures; older history is never fetched. Later refreshes page through
   every newer signature (bounded per refresh, resumed next time) and only advance once the gap is closed.
-- Swap identity is `signature:eventIndex`; chart order is slot, then the RPC's signature order, then event index.
+- Swap identity is `signature:instructionPosition` (identical event bytes at different positions are distinct swaps). Chart order is slot, then the RPC's `transactionIndex` when every swap in that slot has a valid one (public mainnet RPC currently returns it), else the RPC's newest-first listing order (deterministic, not guaranteed execution order), then event position.
+- Coverage is `complete` only when nothing is pending, failed to load, missing, dropped, trimmed or rejected; otherwise the chart shows partial/unavailable with counts. Retained swaps (5,000), processed signatures (3,000) and open scan rows (600) are capped per market; trimming and scan gaps are disclosed.
 - A null/erroring `getTransaction` is retried, then counted as missing; 429s keep all progress and back off.
 - All timeframes (`1s`…`1D`) aggregate the same verified swaps. The browser polls (~4–15s) only while the chart is visible.
 - Migrated AMM pools are not charted; completed curves show their pre-migration swaps.

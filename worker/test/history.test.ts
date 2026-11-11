@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import bs58 from "bs58";
 import { Keypair } from "@solana/web3.js";
 import { PUMP_PROGRAM, EVENT_AUTHORITY, bondingCurvePda, extractSwaps } from "../src/history/pumpEvents.ts";
-import { createHistoryService, checkSupport } from "../src/history/service.ts";
+import { createHistoryService, checkSupport, orderSwaps, MAX_SWAPS } from "../src/history/service.ts";
 import { RpcLimited } from "../src/history/rpc.ts";
 import { marketId, type Market } from "../src/store.ts";
 
@@ -42,12 +42,12 @@ const market = (over: Partial<Market> = {}): Market => ({
   stateSource: null, stateUpdatedAt: null, migratedTo: null, migratedFrom: null, lastTradeAt: null, launchSignature: null, ...over,
 });
 
-type Script = { sigs: any[][]; txs: Record<string, any>; fail?: (method: string, params: unknown[]) => Error | null };
+type Script = { sigs: any[][]; txs: Record<string, any>; fail?: (method: string, params: unknown[]) => Error | null; cooling?: () => boolean };
 function harness(script: Script) {
   let t = 1_000_000;
   const calls: string[] = [];
   const svc = createHistoryService({
-    now: () => t, coolingDown: () => false,
+    now: () => t, coolingDown: script.cooling ?? (() => false), cooldownUntil: () => t + 5_000,
     rpc: async <T,>(method: string, params: unknown[]): Promise<T> => {
       calls.push(method);
       const f = script.fail?.(method, params); if (f) throw f;
@@ -157,7 +157,9 @@ test("decoder rejects failed, unrelated and malformed events", () => {
   assert.equal(extractSwaps(tx(1, 1, [eventData({ sol: 0n, tok: 1_000_000n, buy: true })]), "s", curve, mint).rejectedEvents, 1);
   const truncated = bs58.encode(Buffer.from(bs58.decode(good)).subarray(0, 40));
   assert.equal(extractSwaps(tx(1, 1, [truncated]), "s", curve, mint).rejectedEvents, 1);
-  assert.equal(extractSwaps(tx(1, 1, [good, good]), "s", curve, mint).swaps.length, 1, "byte-identical duplicate dropped");
+  const twin = extractSwaps(tx(1, 1, [good, good]), "s", curve, mint);
+  assert.equal(twin.swaps.length, 2, "identical bytes at distinct instruction positions are distinct events");
+  assert.notEqual(twin.swaps[0].id, twin.swaps[1].id);
   assert.equal(extractSwaps(tx(1, 1, [bs58.encode(Buffer.from("plain transfer"))]), "s", curve, mint).swaps.length, 0);
 });
 
@@ -181,6 +183,79 @@ test("a transaction-level RPC error is retried and does not block other swaps", 
   for (let i = 0; i < 6; i++) { await h.run(); h.advance(3_000); }
   const s = h.snap();
   assert.equal(s.swaps, 1);
-  assert.equal(s.missingTransactions, 1);
-  assert.equal(s.state, "ok");
+  assert.equal(s.transportFailedTransactions, 1);
+  assert.equal(s.missingTransactions, 0);
+  assert.equal(s.state, "partial", "lost transactions are never 'ok'/complete");
+  assert.equal(s.coverage, "incomplete");
+  assert.equal(s.completedAt, null);
+});
+
+test("every getTransaction times out: unavailable, never empty or complete", async () => {
+  const h = harness({ sigs: [[sig("P", 9), sig("Q", 8)]], txs: {}, fail: (m) => (m === "getTransaction" ? new Error("timeout") : null) });
+  for (let i = 0; i < 6; i++) { await h.run(); h.advance(3_000); }
+  const s = h.snap();
+  assert.equal(s.state, "unavailable");
+  assert.equal(s.transportFailedTransactions, 2);
+  assert.equal(s.coverage, "incomplete");
+  assert.equal(s.completedAt, null);
+  assert.match(s.error!, /timeout/);
+});
+
+test("malformed event with zero swaps is partial with a rejected count, not empty", async () => {
+  const bad = bs58.encode(Buffer.from(bs58.decode(eventData({ sol: 1n, tok: 1n, buy: true }))).subarray(0, 40));
+  const h = harness({ sigs: [[sig("M", 3)]], txs: { M: tx(3, 1_700_000_000, [bad]) } });
+  await h.run();
+  const s = h.snap();
+  assert.equal(s.swaps, 0);
+  assert.equal(s.rejectedEvents, 1);
+  assert.equal(s.state, "partial");
+  assert.equal(s.coverage, "incomplete");
+  assert.equal(s.completedAt, null);
+});
+
+test("global RPC cooldown on a new market reports rate_limited, then retries", async () => {
+  let cooling = true;
+  const h = harness({ sigs: [[]], txs: {}, cooling: () => cooling });
+  const s1 = h.snap();
+  assert.equal(s1.state, "rate_limited");
+  assert.ok(s1.retryAt);
+  assert.equal(h.calls.length, 0);
+  cooling = false;
+  await h.run();
+  assert.equal(h.snap().state, "empty");
+});
+
+test("identical event bytes in two transactions are two swaps; repeated signature rows are fetched once", async () => {
+  const d = eventData({ sol: 1_000_000n, tok: 1_000_000n, buy: true });
+  const h = harness({ sigs: [[sig("Y", 4), sig("X", 4), sig("Y", 4)]], txs: { X: tx(4, 1_700_000_000, [d]), Y: tx(4, 1_700_000_000, [d]) } });
+  await h.run();
+  assert.equal(h.snap().swaps, 2);
+  assert.equal(h.calls.filter((c) => c === "getTransaction").length, 2);
+});
+
+test("valid transactionIndex orders a slot; mixed/missing falls back to RPC rank", () => {
+  const a = { slot: 1, rank: 2, txIndex: 0, eventIndex: 0 }, b = { slot: 1, rank: 1, txIndex: 5, eventIndex: 0 };
+  assert.deepEqual(orderSwaps([a, b]), [a, b]);
+  const c = { ...b, txIndex: null };
+  assert.deepEqual(orderSwaps([a, c]), [c, a]);
+});
+
+test("high volume: retained swaps and open scans are bounded and trimming is disclosed", async () => {
+  const txs: Record<string, any> = {};
+  let n = 0;
+  const page = () => Array.from({ length: 100 }, () => { const id = `V${n++}`; txs[id] = tx(10_000 + n, 1_700_000_000 + n, [eventData({ sol: 1_000_000n, tok: 1_000_000n, buy: true }), eventData({ sol: 2_000_000n, tok: 1_000_000n, buy: false })]); return sig(id, 10_000 + n); }).reverse();
+  const sigs: any[][] = [page()];
+  // Every later scan sees 7 full pages (more than MAX_SCAN_ROWS) of newer activity.
+  const h = harness({ sigs, txs });
+  for (let round = 0; round < 6; round++) {
+    const burst = Array.from({ length: 7 }, page).reverse(); // newest page first
+    for (const p of burst) sigs.push(p);
+    for (let i = 0; i < 60; i++) { await h.run(); h.advance(3_000); }
+    h.advance(25_000);
+  }
+  const s = h.snap(1);
+  assert.ok(s.swaps <= MAX_SWAPS, `bounded swaps ${s.swaps}`);
+  assert.ok((s.scanGaps ?? 0) > 0, "scan gap disclosed");
+  assert.ok((s.trimmedSwaps ?? 0) + (s.droppedTransactions ?? 0) > 0, "trimming disclosed");
+  assert.notEqual(s.state, "ok");
 });

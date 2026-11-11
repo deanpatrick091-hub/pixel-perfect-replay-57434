@@ -63,6 +63,22 @@ describe("useChartHistory polling", () => {
     expect(result.current.data?.swaps).toBe(5);
   });
 
+  it("a candle-less failure/empty after a worker restart keeps the whole previous snapshot", async () => {
+    vi.useFakeTimers();
+    let restarted = false;
+    const withCandles = { ...snap("A", "1m", 4), candles: [{ t: 60, o: 1, h: 2, l: 1, c: 2, v: 1, buys: 4, sells: 0 } as any] };
+    const fetcher = vi.fn<HistoryFetcher>(async (m, tf) => (restarted ? { ...snap(m, tf, 0, "unknown_market") } : withCandles));
+    const { result } = renderHook(() => useChartHistory("A", "1m", fetcher, true));
+    await flush();
+    restarted = true;
+    await act(async () => { await vi.advanceTimersByTimeAsync(POLL_IDLE_MS); });
+    expect(result.current.data?.swaps).toBe(4);
+    expect(result.current.data?.candles.length).toBe(1);
+    expect(result.current.data?.state).toBe("ok");
+    expect(result.current.latest?.state).toBe("unknown_market");
+    expect(result.current.latest?.swaps).toBe(0);
+  });
+
   it("timeframe change resets to that timeframe's own snapshot", async () => {
     vi.useFakeTimers();
     const fetcher = vi.fn<HistoryFetcher>(async (m, tf) => snap(m, tf, tf === "5m" ? 2 : 9));
