@@ -1,6 +1,7 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { feed } from "@/lib/feed/client";
 import type { Candle, ChartHistory } from "@/lib/feed/types";
+import { useChartHistory } from "@/lib/feed/useChartHistory";
 import { fmtPrice } from "@/lib/format";
 import { cn } from "@/lib/utils";
 
@@ -18,19 +19,27 @@ function cssVar(name: string) {
   return `#${hex(r)}${hex(g)}${hex(b)}`;
 }
 
-export function PriceChart({ marketId, quoteCcy, tick }: { marketId: string; quoteCcy: string; tick: number }) {
+const fetchHistory = (id: string, tf: string, signal: AbortSignal) => feed.history(id, tf, signal);
+const clock = (ms: number | null | undefined) => (ms ? new Date(ms).toLocaleTimeString() : "never");
+
+export function PriceChart({ marketId, quoteCcy, tick, liveTrades }: { marketId: string; quoteCcy: string; tick: number; liveTrades: boolean }) {
+  const wrap = useRef<HTMLDivElement>(null);
   const el = useRef<HTMLDivElement>(null);
-  const api = useRef<{ chart: any; candles: any; volume: any } | null>(null);
+  const api = useRef<{ chart: any; candles: any; volume: any; up: string; down: string } | null>(null);
   const [tf, setTf] = useState<(typeof TIMEFRAMES)[number]>("1m");
-  const [hist, setHist] = useState<ChartHistory | null>(null);
-  const [histNetErr, setHistNetErr] = useState(false);
-  const [histTick, setHistTick] = useState(0);
-  const drewHist = useRef(false);
-  const [count, setCount] = useState<number | null>(null);
-  const [note, setNote] = useState<string>("");
   const [ready, setReady] = useState(false);
   const [chartError, setChartError] = useState(false);
-  const fitted = useRef(false);
+  const [visible, setVisible] = useState(false);
+  const [live, setLive] = useState<{ candles: Candle[]; note: string } | null>(null);
+  const fitted = useRef<string | null>(null);
+
+  // Only poll while the chart is actually on screen (mobile tabs hide it with CSS).
+  useEffect(() => {
+    if (!wrap.current || typeof IntersectionObserver === "undefined") { setVisible(true); return; }
+    const io = new IntersectionObserver(([e]) => setVisible(e?.isIntersecting ?? false));
+    io.observe(wrap.current);
+    return () => io.disconnect();
+  }, []);
 
   useEffect(() => {
     let disposed = false;
@@ -48,84 +57,79 @@ export function PriceChart({ marketId, quoteCcy, tick }: { marketId: string; quo
         localization: { priceFormatter: (p: number) => fmtPrice(p, "") },
       });
       const up = cssVar("--up"), down = cssVar("--down");
+      // Close >= open is bullish (green), close < open bearish (red); body, border and wick all follow.
       const candles = chart.addSeries(lc.CandlestickSeries, {
         upColor: up, downColor: down, borderUpColor: up, borderDownColor: down, wickUpColor: up, wickDownColor: down,
         priceFormat: { type: "custom", formatter: (p: number) => fmtPrice(p, ""), minMove: 1e-12 },
       });
       const volume = chart.addSeries(lc.HistogramSeries, { priceScaleId: "vol", priceFormat: { type: "volume" } });
       chart.priceScale("vol").applyOptions({ scaleMargins: { top: 0.82, bottom: 0 } });
-      api.current = { chart, candles, volume };
+      api.current = { chart, candles, volume, up, down };
       setReady(true);
-    }).catch(() => {
-      if (!disposed) setChartError(true);
-    });
+    }).catch(() => { if (!disposed) setChartError(true); });
     return () => { disposed = true; api.current?.chart.remove(); api.current = null; };
   }, []);
 
-  useEffect(() => { fitted.current = false; }, [tf, marketId]);
+  const hist = useChartHistory(marketId, tf, fetchHistory, ready && visible);
+  const h: ChartHistory | null = hist.data;
+  const historyOff = h?.state === "unsupported" || h?.state === "unknown_market";
+  const useLive = historyOff && liveTrades;
 
-  const draw = (list: Candle[]) => {
-    if (!api.current) return;
-    const up = cssVar("--up"), down = cssVar("--down");
-    api.current.candles.setData(list.map((c) => ({ time: c.t, open: c.o, high: c.h, low: c.l, close: c.c })));
-    api.current.volume.setData(list.map((c) => ({ time: c.t, value: c.v, color: (c.c >= c.o ? up : down) + "88" })));
-    if (!fitted.current && list.length) { api.current.chart.timeScale().fitContent(); fitted.current = true; }
-  };
-
-  useEffect(() => { setHist(null); setHistNetErr(false); drewHist.current = false; }, [marketId]);
-  useEffect(() => { drewHist.current = false; }, [tf]);
-
-  // Live candles (non-1m timeframes) from swaps the worker streams.
+  // Live worker-observed candles: only when history doesn't apply and real trades are actually streaming.
   useEffect(() => {
-    if (!ready || tf === "1m") return;
+    if (!useLive || !ready) { setLive(null); return; }
     let cancelled = false;
     const t = setTimeout(async () => {
       const res = await feed.candles(marketId, tf);
-      if (cancelled || !res || !api.current) return;
-      setCount(res.candles.length);
-      setNote(res.note);
-      draw(res.candles);
+      if (!cancelled && res) setLive({ candles: res.candles, note: res.note });
     }, 250);
     return () => { cancelled = true; clearTimeout(t); };
-  }, [marketId, tf, tick, ready]);
+  }, [useLive, ready, marketId, tf, tick]);
 
-  // 1m: on-chain history, polled while the chart is open. Failed polls keep the last good candles.
+  const list: Candle[] = useMemo(() => (useLive ? live?.candles ?? [] : h?.candles ?? []), [useLive, live, h]);
+  const viewKey = `${marketId}|${tf}|${useLive ? "live" : "hist"}`;
+
   useEffect(() => {
-    if (!ready || tf !== "1m") return;
-    let cancelled = false;
-    const t = setTimeout(async () => {
-      const res = await feed.history(marketId);
-      if (cancelled) return;
-      if (!res) { setHistNetErr(true); }
-      else {
-        setHistNetErr(false);
-        setHist((prev) => (res.candles.length || !prev?.candles.length ? res : { ...res, candles: prev.candles }));
-        if (res.candles.length) { draw(res.candles); drewHist.current = true; }
-        else if (!drewHist.current) draw([]);
-      }
-      const busy = !res || res.state === "loading" || res.refreshing;
-      setTimeout(() => { if (!cancelled) setHistTick((n) => n + 1); }, busy ? 4000 : 15000);
-    }, histTick === 0 ? 100 : 0);
-    return () => { cancelled = true; clearTimeout(t); };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [marketId, tf, ready, histTick]);
+    const a = api.current;
+    if (!a) return;
+    a.candles.setData(list.map((c) => ({ time: c.t, open: c.o, high: c.h, low: c.l, close: c.c })));
+    a.volume.setData(list.map((c) => ({ time: c.t, value: c.v, color: (c.c >= c.o ? a.up : a.down) + "88" })));
+    // Fit once per market/timeframe; later refreshes keep the user's pan/zoom.
+    if (list.length && fitted.current !== viewKey) { a.chart.timeScale().fitContent(); fitted.current = viewKey; }
+  }, [list, viewKey, ready]);
 
-  const time = (ms: number | null) => (ms ? new Date(ms).toLocaleTimeString() : "never");
-  const histLabel = (() => {
-    if (tf !== "1m") return null;
-    if (histNetErr) return { tone: "warn", text: `Market service unreachable · showing last data (${time(hist?.fetchedAt ?? null)})` };
-    if (!hist) return { tone: "muted", text: "Loading on-chain history…" };
-    const base = `Source: Solana RPC · Pump trade events · ${hist.swaps} swaps · updated ${time(hist.fetchedAt)}${hist.refreshing ? " · refreshing…" : ""}`;
-    if (hist.state === "rate_limited") return { tone: "warn", text: `Rate limited by Solana RPC — retrying shortly · ${hist.candles.length ? "showing last data · " : ""}${base}` };
-    if (hist.state === "unavailable") return { tone: "warn", text: `On-chain history unavailable right now · ${hist.candles.length ? "showing last data · " : ""}${base}` };
-    if (hist.state === "unsupported") return { tone: "muted", text: hist.error ?? "On-chain history not available for this market." };
-    if (hist.state === "loading") return { tone: "muted", text: "Loading recent swaps from Solana RPC…" };
-    return { tone: "muted", text: base };
+  const fit = useCallback(() => api.current?.chart.timeScale().fitContent(), []);
+  const latest = useCallback(() => api.current?.chart.timeScale().scrollToRealTime(), []);
+
+  const label = (() => {
+    if (useLive) return { tone: "muted", text: `Source: swaps streamed live to this worker · ${live?.note ?? ""}` };
+    if (!h) return hist.netErr ? { tone: "warn", text: "Market service unreachable · retrying" } : { tone: "muted", text: "Loading on-chain history…" };
+    if (historyOff) return { tone: "muted", text: h.error ?? "On-chain history not available for this market." };
+    const range = h.oldestTs && h.newestTs ? ` · swaps ${new Date(h.oldestTs * 1000).toLocaleTimeString()}–${new Date(h.newestTs * 1000).toLocaleTimeString()}` : "";
+    const base = `Polled history (not tick streaming) · Solana RPC · Pump trade events · ${h.swaps} swaps${range} · last RPC success ${clock(h.lastSuccessAt)}`;
+    const stale = hist.netErr ? `Market service unreachable · showing snapshot from ${clock(h.lastSuccessAt)} · ` : "";
+    const curve = h.curveStatus && h.curveStatus !== "active" ? "Curve completed — these are its pre-migration swaps; the destination pool isn't charted · " : "";
+    const gap = h.missingTransactions ? ` · ${h.missingTransactions} transactions unavailable from RPC` : "";
+    if (h.state === "rate_limited") return { tone: "warn", text: `${stale}${curve}Rate limited by Solana RPC — retrying · ${base}${gap}` };
+    if (h.state === "unavailable") return { tone: "warn", text: `${stale}${curve}Solana RPC request failed — retrying · ${base}${gap}` };
+    if (h.state === "loading") return { tone: "muted", text: "Loading recent swaps from Solana RPC…" };
+    if (h.state === "partial") return { tone: hist.netErr ? "warn" : "muted", text: `${stale}${curve}Scanning · ${h.pendingTransactions ?? 0} transactions left · ${base}${gap}` };
+    return { tone: hist.netErr ? "warn" : "muted", text: `${stale}${curve}${base} · scan complete ${clock(h.completedAt)}${gap}` };
   })();
-  const histEmpty = tf === "1m" && hist && !hist.candles.length && !histNetErr;
+
+  const emptyMsg = (() => {
+    if (chartError || list.length) return null;
+    if (useLive) return live ? <>No swaps observed for this market yet.<br />{live.note}</> : null;
+    if (!h) return null;
+    if (historyOff) return <>{h.error}</>;
+    if (h.state === "empty") return <>No successful swaps found in this curve's {h.windowSignatures ?? "recent"} most recent transactions.</>;
+    if (h.state === "rate_limited") return <>Solana RPC is rate limiting requests. Candles appear once it allows more.</>;
+    if (h.state === "unavailable") return <>On-chain history could not be loaded. Retrying automatically.</>;
+    return <>Loading recent swaps…</>;
+  })();
 
   return (
-    <div className="flex h-full min-h-[320px] flex-col">
+    <div ref={wrap} className="flex h-full min-h-[320px] flex-col">
       <div className="flex items-center gap-1 border-b border-border px-2 py-1">
         {TIMEFRAMES.map((t) => (
           <button key={t} onClick={() => setTf(t)} aria-pressed={tf === t}
@@ -133,31 +137,20 @@ export function PriceChart({ marketId, quoteCcy, tick }: { marketId: string; quo
             {t}
           </button>
         ))}
+        <button onClick={fit} className="ml-2 rounded px-1.5 py-0.5 text-[11px] text-muted-foreground hover:text-foreground" aria-label="Fit all candles">Fit</button>
+        <button onClick={latest} className="rounded px-1.5 py-0.5 text-[11px] text-muted-foreground hover:text-foreground" aria-label="Jump to latest candle">Latest</button>
         <span className="ml-auto text-[11px] text-muted-foreground">Price in {quoteCcy} · scroll to zoom, drag to pan</span>
       </div>
       <div className="relative min-h-[280px] flex-1">
         <div ref={el} className="absolute inset-0" />
         {chartError && <div role="status" className="p-6 text-center text-xs text-muted-foreground">Chart failed to load. Refresh to try again.</div>}
-        {histLabel && (
-          <div role="status" className={cn("pointer-events-none absolute left-2 top-1 z-10 max-w-[90%] text-[10px]", histLabel.tone === "warn" ? "text-down" : "text-muted-foreground")}>
-            {histLabel.text}
+        {label && !chartError && (
+          <div role="status" className={cn("pointer-events-none absolute left-2 top-1 z-10 max-w-[90%] text-[10px]", label.tone === "warn" ? "text-down" : "text-muted-foreground")}>
+            {label.text}
           </div>
         )}
-        {!chartError && histEmpty && (
-          <div className="pointer-events-none absolute inset-0 grid place-items-center p-6 text-center text-xs text-muted-foreground">
-            <div>
-              {hist!.state === "empty" ? <>No successful swaps found in this curve's recent transactions.</>
-                : hist!.state === "rate_limited" ? <>Solana RPC is rate limiting requests. Candles will appear once it allows more.</>
-                : hist!.state === "unavailable" ? <>On-chain history could not be loaded. Retrying automatically.</>
-                : hist!.state === "unsupported" ? <>{hist!.error}</>
-                : <>Loading recent swaps…</>}
-            </div>
-          </div>
-        )}
-        {!chartError && tf !== "1m" && count === 0 && (
-          <div className="pointer-events-none absolute inset-0 grid place-items-center p-6 text-center text-xs text-muted-foreground">
-            <div>No swaps observed for this market yet.<br />{note}</div>
-          </div>
+        {emptyMsg && (
+          <div className="pointer-events-none absolute inset-0 grid place-items-center p-6 text-center text-xs text-muted-foreground"><div>{emptyMsg}</div></div>
         )}
       </div>
     </div>

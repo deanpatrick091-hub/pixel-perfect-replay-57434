@@ -100,7 +100,7 @@ function Terminal() {
 
       <div className="grid min-h-0 flex-1 lg:grid-cols-[1fr_300px] lg:grid-rows-[1fr_240px]">
         <div className={cn("min-h-[320px] border-border lg:border-r lg:border-b", mobileTab !== "chart" && "hidden lg:block")}>
-          <PriceChart marketId={m.id} quoteCcy={m.quoteCcy} tick={tape[0]?.receivedAt ?? 0} />
+          <PriceChart marketId={m.id} quoteCcy={m.quoteCcy} tick={tape[0]?.receivedAt ?? 0} liveTrades={m.tradeFeed === "live"} />
         </div>
         <aside className={cn("scroll-thin overflow-y-auto border-border lg:row-span-2", mobileTab !== "trade" && "hidden lg:block")}>
           <OrderTicket m={m} reference={feed.reference} />

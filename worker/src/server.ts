@@ -81,9 +81,10 @@ export function startServer(store: Store, statusFn: () => Record<string, unknown
       // Read-only chart history from public Solana RPC; never used for quotes or paper execution.
       const id = u.searchParams.get("market") ?? "";
       const tf = u.searchParams.get("tf") ?? "1m";
-      if (tf !== "1m") return json(req, res, 400, { error: "on-chain history currently supports 1m only" });
-      const h = history(store.markets.get(id), id, 60);
-      return json(req, res, 200, { market: id, tf, quoteCcy: "SOL", source: "solana-rpc:pump-trade-event", ...h });
+      const sec = INTERVALS[tf];
+      if (!sec) return json(req, res, 400, { error: "unsupported timeframe" });
+      const h = history(store.markets.get(id), id, sec);
+      return json(req, res, 200, { market: id, tf, quoteCcy: "SOL", source: "solana-rpc:pump-trade-event", delivery: "polled", ...h });
     }
     json(req, res, 404, { error: "not found" });
   });

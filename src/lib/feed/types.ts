@@ -41,8 +41,11 @@ export function marketUsd(m: MarketSummary, ref: Reference | null) {
   };
 }
 
-export type HistoryState = "ok" | "empty" | "loading" | "rate_limited" | "unavailable" | "unsupported";
+export type HistoryState = "ok" | "partial" | "empty" | "loading" | "rate_limited" | "unavailable" | "unsupported" | "unknown_market";
+/** One coherent snapshot of polled, read-only on-chain history (never used for quotes or orders). */
 export interface ChartHistory {
-  market: string; tf: string; source: string; state: HistoryState; refreshing?: boolean; candles: Candle[]; swaps: number;
-  fetchedAt: number | null; error: string | null; scannedTransactions?: number; oldestTs?: number | null; newestTs?: number | null; ttlSec?: number;
+  market: string; tf: string; source: string; delivery?: "polled"; state: HistoryState; refreshing?: boolean; candles: Candle[]; swaps: number;
+  lastSuccessAt: number | null; completedAt: number | null; error: string | null; failureAt?: number | null;
+  scannedTransactions?: number; pendingTransactions?: number; missingTransactions?: number; rejectedEvents?: number;
+  oldestTs?: number | null; newestTs?: number | null; curveStatus?: "active" | "migrated" | "retired"; windowSignatures?: number; ttlSec?: number;
 }

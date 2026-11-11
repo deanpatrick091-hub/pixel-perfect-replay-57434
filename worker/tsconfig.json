@@ -9,5 +9,5 @@
     "allowImportingTsExtensions": true,
     "types": ["node"]
   },
-  "include": ["src", "../src/lib/market"]
+  "include": ["src", "test", "../src/lib/market"]
 }

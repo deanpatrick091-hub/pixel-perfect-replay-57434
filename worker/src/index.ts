@@ -38,7 +38,7 @@ function coverage() {
     ? `live for up to ${config.maxTradeSubs} subscribed mints (metered)`
     : "unavailable — set PUMPPORTAL_API_KEY to enable";
   return {
-    "solana/pumpfun/bonding-curve": { launches: upstreamConnected ? "live" : "reconnecting", migrations: upstreamConnected ? "live" : "reconnecting", trades, quoteModel: "pump_curve_v1 (constant product on virtual reserves)", chartHistory: "1m candles from Pump TradeEvents via Solana RPC for viewed curves (read-only, not used for execution)", paperExecution: tradeSubsEnabled() ? "enabled on subscribed curves with fresh state" : "disabled (no live trade source)" },
+    "solana/pumpfun/bonding-curve": { launches: upstreamConnected ? "live" : "reconnecting", migrations: upstreamConnected ? "live" : "reconnecting", trades, quoteModel: "pump_curve_v1 (constant product on virtual reserves)", chartHistory: "polled candles (all timeframes) from Pump TradeEvents via Solana RPC for viewed curves; recent window only; read-only, not used for execution", paperExecution: tradeSubsEnabled() ? "enabled on subscribed curves with fresh state" : "disabled (no live trade source)" },
     "solana/pumpswap/amm": { destinationPools: "resolved via DEX Screener after verified migration event", trades: tradeSubsEnabled() ? "unverified until first swap observed per pool" : "unavailable", quoteModel: "cpmm_reserves from DEX Screener liquidity (refreshed ~15s)" },
     "solana/raydium,meteora,other": { trades: "not covered yet", paperExecution: "disabled" },
   };

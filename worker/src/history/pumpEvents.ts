@@ -53,48 +53,60 @@ export function decodeTradeEvent(data: Buffer): DecodedTrade | null {
 }
 
 export interface VerifiedSwap {
+  /** Unique identity: signature + event index within that transaction. Never used for ordering. */
   id: string; signature: string; eventIndex: number; slot: number; blockTime: number; side: "buy" | "sell";
-  baseQty: number; quoteQty: number; price: number; trader: string; orderKey: string;
+  baseQty: number; quoteQty: number; price: number; trader: string;
 }
 
+export interface ExtractResult { swaps: VerifiedSwap[]; rejectedEvents: number; reason: "ok" | "failed_tx" | "no_curve" | "bad_decimals" | "no_events" }
+
 /** Extract only validated Pump TradeEvents for (curve, mint) from a getTransaction(json, v0) result. */
-export function extractSwaps(tx: any, signature: string, curve: string, mint: string, txIndex: number | null = null): VerifiedSwap[] {
-  if (!tx || !tx.meta || tx.meta.err != null || typeof tx.blockTime !== "number") return [];
+export function extractSwaps(tx: any, signature: string, curve: string, mint: string): ExtractResult {
+  const none = (reason: ExtractResult["reason"]): ExtractResult => ({ swaps: [], rejectedEvents: 0, reason });
+  if (!tx || !tx.meta || tx.meta.err != null || typeof tx.blockTime !== "number") return none("failed_tx");
   const msg = tx.transaction?.message;
   const keys: string[] = [...(msg?.accountKeys ?? []), ...(tx.meta.loadedAddresses?.writable ?? []), ...(tx.meta.loadedAddresses?.readonly ?? [])];
-  if (!keys.includes(curve)) return [];
+  if (!keys.includes(curve)) return none("no_curve");
   // Token decimals from the transaction's own token balances (Pump mints use 6).
   const bal = [...(tx.meta.postTokenBalances ?? []), ...(tx.meta.preTokenBalances ?? [])].find((b: any) => b.mint === mint);
   const decimals = bal?.uiTokenAmount?.decimals;
-  if (decimals !== 6) return [];
+  if (decimals !== 6) return none("bad_decimals");
   const out: VerifiedSwap[] = [];
-  let idx = 0;
+  const seen = new Set<string>();
+  let rejected = 0, idx = 0;
   for (const group of tx.meta.innerInstructions ?? []) {
     const top = msg.instructions?.[group.index];
     const list: any[] = group.instructions ?? [];
     list.forEach((ix, i) => {
       if (keys[ix.programIdIndex] !== PUMP_PROGRAM) return;
-      const data = Buffer.from(bs58.decode(ix.data));
+      let data: Buffer;
+      try { data = Buffer.from(bs58.decode(ix.data)); } catch { return; }
+      if (data.length < 16 || !data.subarray(0, 8).equals(EVENT_IX_TAG) || !data.subarray(8, 16).equals(TRADE_EVENT)) return;
       const ev = decodeTradeEvent(data);
-      if (!ev) return;
+      const reject = () => { rejected++; };
+      if (!ev) return reject();
       const h = ix.stackHeight ?? null;
-      if (h == null || h < 2) return;
+      if (h == null || h < 2) return reject();
       const accs: string[] = (ix.accounts ?? []).map((a: number) => keys[a]);
-      if (accs.length !== 1 || accs[0] !== EVENT_AUTHORITY) return;
+      if (accs.length !== 1 || accs[0] !== EVENT_AUTHORITY) return reject();
       // Parent invocation (one level up) must be the Pump program acting on this curve.
       let parent: any = null;
       if (h === 2) parent = top;
       else for (let j = i - 1; j >= 0; j--) if ((list[j].stackHeight ?? 0) === h - 1) { parent = list[j]; break; }
-      if (!parent || keys[parent.programIdIndex] !== PUMP_PROGRAM) return;
-      if (!(parent.accounts ?? []).map((a: number) => keys[a]).includes(curve)) return;
-      if (ev.mint !== mint) return;
-      if (ev.quoteMint && ev.quoteMint !== DEFAULT_PK && ev.quoteMint !== WSOL) return;
-      if (ev.solLamports <= 0n || ev.tokenRaw <= 0n) return;
+      if (!parent || keys[parent.programIdIndex] !== PUMP_PROGRAM) return reject();
+      if (!(parent.accounts ?? []).map((a: number) => keys[a]).includes(curve)) return reject();
+      if (ev.mint !== mint) return reject();
+      if (ev.quoteMint && ev.quoteMint !== DEFAULT_PK && ev.quoteMint !== WSOL) return reject();
+      if (ev.solLamports <= 0n || ev.tokenRaw <= 0n) return reject();
+      const dupKey = data.toString("hex");
+      if (seen.has(dupKey)) return reject(); // byte-identical event repeated in one tx
+      seen.add(dupKey);
       const quoteQty = Number(ev.solLamports) / 1e9, baseQty = Number(ev.tokenRaw) / 10 ** decimals;
-      out.push({ id: `${signature}:${idx}`, signature, eventIndex: idx, slot: tx.slot, blockTime: tx.blockTime, side: ev.isBuy ? "buy" : "sell", baseQty, quoteQty, price: quoteQty / baseQty, trader: ev.user,
-        orderKey: `${String(tx.slot).padStart(12, "0")}:${String(txIndex ?? 99999).padStart(5, "0")}:${String(idx).padStart(3, "0")}` });
+      const price = quoteQty / baseQty;
+      if (!Number.isFinite(price) || price <= 0) return reject();
+      out.push({ id: `${signature}:${idx}`, signature, eventIndex: idx, slot: tx.slot, blockTime: tx.blockTime, side: ev.isBuy ? "buy" : "sell", baseQty, quoteQty, price, trader: ev.user });
       idx++;
     });
   }
-  return out;
+  return { swaps: out, rejectedEvents: rejected, reason: out.length ? "ok" : "no_events" };
 }
