@@ -174,3 +174,13 @@ test("timeframes aggregate the same verified swaps", async () => {
   // Genuine all-down sequence: every 1m candle is bearish or flat, none fabricated green.
   assert.ok(h.snap(60).candles.every((c) => c.c <= c.o));
 });
+
+test("a transaction-level RPC error is retried and does not block other swaps", async () => {
+  const txs: Record<string, any> = { OK: tx(7, 1_700_000_000, [eventData({ sol: 1_000_000n, tok: 1_000_000n, buy: true })]) };
+  const h = harness({ sigs: [[sig("BAD", 8), sig("OK", 7)]], txs, fail: (m, p) => (m === "getTransaction" && p[0] === "BAD" ? new Error("rpc error -32015") : null) });
+  for (let i = 0; i < 6; i++) { await h.run(); h.advance(3_000); }
+  const s = h.snap();
+  assert.equal(s.swaps, 1);
+  assert.equal(s.missingTransactions, 1);
+  assert.equal(s.state, "ok");
+});

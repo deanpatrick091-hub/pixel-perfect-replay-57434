@@ -45,11 +45,16 @@ Swap events from PumpPortal carry no block timestamp or instruction index; the w
 receipt time and uses `signature + market` as event identity. Listing coverage and timing will
 differ from Axiom, FOMO and DEX Screener.
 
-## Chart history (free, read-only)
-Opened Pump.fun bonding-curve markets get 1m candles from recent on-chain swaps via Solana JSON-RPC
-(`getSignaturesForAddress` on the verified curve PDA + `getTransaction`, decoding official Pump `TradeEvent`s).
-Only markets someone is viewing are refreshed (20s cache, deduplicated, ~1.5 req/s global budget, backoff on 429/403).
+## Chart history (free, read-only, polled)
+Opened Pump.fun bonding-curve markets get candles from recent on-chain swaps via Solana JSON-RPC
+(`getSignaturesForAddress` on the verified curve PDA + `getTransaction`, decoding official Pump `TradeEvent` self-CPIs).
+- First view scans only the 100 most recent signatures; older history is never fetched. Later refreshes page through
+  every newer signature (bounded per refresh, resumed next time) and only advance once the gap is closed.
+- Swap identity is `signature:eventIndex`; chart order is slot, then the RPC's signature order, then event index.
+- A null/erroring `getTransaction` is retried, then counted as missing; 429s keep all progress and back off.
+- All timeframes (`1s`…`1D`) aggregate the same verified swaps. The browser polls (~4–15s) only while the chart is visible.
+- Migrated AMM pools are not charted; completed curves show their pre-migration swaps.
 This data is never used for quotes or paper execution.
 - `SOLANA_RPC_URL` (optional) — defaults to the free public `https://api.mainnet-beta.solana.com`.
 - `SOLANA_RPC_MAX_RPS` (optional, default 1.5).
-Endpoint: `GET /api/history?market=<id>&tf=1m`.
+Endpoint: `GET /api/history?market=<id>&tf=<1s|5s|15s|1m|5m|15m|1h|4h|1D>`. Tests: `cd worker && npm test`.

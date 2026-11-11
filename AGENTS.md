@@ -35,4 +35,4 @@ use the editor.
 - All paper-trading money movement happens inside SQL functions (`place_market_order`, `reset_paper_account`) with a per-user row lock and idempotency keys; users can only read their tables (RLS).
 - Quote math and candle aggregation live in `src/lib/market/`, shared by the UI and the worker; keep them dependency-free.
 - Never render invented tokens, prices or candles; show an explicit unavailable/setup state instead.
-- Chart history for Pump.fun curves comes from public Solana RPC (`worker/src/history/`), decoded only from validated Pump TradeEvent self-CPIs; it is read-only, cached per viewed market, rate-budgeted, and must never feed quotes, executable state or paper orders.
+- Chart history for Pump.fun curves comes from public Solana RPC (`worker/src/history/`), decoded only from validated Pump TradeEvent self-CPIs; it is read-only, polled only while visible, cached per viewed market, rate-budgeted, and must never feed quotes, executable state or paper orders. Swap identity (`signature:eventIndex`) stays separate from chart order (slot, RPC rank, event index) so same-slot swaps are never merged.

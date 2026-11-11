@@ -115,7 +115,16 @@ export function createHistoryService(deps: HistoryDeps) {
   async function decodeTransactions(e: Entry) {
     const batch = pending(e).sort((a, b) => b.rank - a.rank).slice(0, TX_PER_REFRESH);
     for (const s of batch) {
-      const tx = await deps.rpc<any>("getTransaction", [s.signature, { encoding: "json", maxSupportedTransactionVersion: 0, commitment: "confirmed" }]);
+      let tx: any;
+      try {
+        tx = await deps.rpc<any>("getTransaction", [s.signature, { encoding: "json", maxSupportedTransactionVersion: 1, commitment: "confirmed" }]);
+      } catch (err) {
+        if (err instanceof RpcLimited) throw err;
+        // One bad transaction must not block the rest: retry it a few times, then count it as missing.
+        if (++s.tries >= MAX_NULL_TRIES) { s.done = true; e.missingTx++; }
+        log("warn", "history transaction fetch failed", { market: e.marketId, signature: s.signature, err: String(err) });
+        continue;
+      }
       e.lastSuccessAt = now();
       if (tx == null) { // not yet available on this RPC node: retry later, never mark processed
         if (++s.tries >= MAX_NULL_TRIES) { s.done = true; e.missingTx++; }
