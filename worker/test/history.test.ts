@@ -7,60 +7,7 @@ import { createHistoryService, checkSupport, orderSwaps, MAX_SWAPS } from "../sr
 import { RpcLimited } from "../src/history/rpc.ts";
 import { marketId, type Market } from "../src/store.ts";
 
-const mint = Keypair.generate().publicKey.toBase58();
-const curve = bondingCurvePda(mint);
-const user = Keypair.generate().publicKey.toBase58();
-
-function eventData(opts: { mint?: string; sol: bigint; tok: bigint; buy: boolean }) {
-  const b = Buffer.alloc(16 + 32 + 8 + 8 + 1 + 32 + 8 + 32);
-  Buffer.from("e445a52e51cb9a1d", "hex").copy(b, 0);
-  Buffer.from([189, 219, 127, 211, 78, 230, 97, 238]).copy(b, 8);
-  let o = 16;
-  Buffer.from(bs58.decode(opts.mint ?? mint)).copy(b, o); o += 32;
-  b.writeBigUInt64LE(opts.sol, o); o += 8; b.writeBigUInt64LE(opts.tok, o); o += 8;
-  b[o] = opts.buy ? 1 : 0; o += 1;
-  Buffer.from(bs58.decode(user)).copy(b, o); o += 32;
-  b.writeBigInt64LE(0n, o); // rest (virtual/real reserves) zero
-  return bs58.encode(b);
-}
-
-/** Pump buy/sell instruction (top level) emitting its TradeEvent via self-CPI at stack height 2. */
-function tx(slot: number, blockTime: number, events: string[], o: { err?: unknown; decimals?: number; authority?: string; parentCurve?: boolean; stack?: number } = {}) {
-  const keys = [user, PUMP_PROGRAM, curve, o.authority ?? EVENT_AUTHORITY, mint];
-  return {
-    slot, blockTime,
-    transaction: { message: { accountKeys: keys, instructions: [{ programIdIndex: 1, accounts: o.parentCurve === false ? [0, 4] : [0, 2, 4], data: "" }] } },
-    meta: { err: o.err ?? null, postTokenBalances: [{ mint, uiTokenAmount: { decimals: o.decimals ?? 6 } }], preTokenBalances: [],
-      innerInstructions: [{ index: 0, instructions: events.map((d) => ({ programIdIndex: 1, accounts: [3], data: d, stackHeight: o.stack ?? 2 })) }] },
-  };
-}
-
-const market = (over: Partial<Market> = {}): Market => ({
-  id: marketId("solana", "curve", curve), chain: "solana", kind: "curve", address: curve, mint, venue: "pumpfun", quoteCcy: "SOL",
-  name: null, symbol: null, imageUri: null, launchedAt: 0, status: "active", stage: "new", curveProgress: null, reserveQuote: null, reserveBase: null,
-  priceQuote: null, totalSupply: null, circulatingSupply: null, liquidityUsd: null, liquidityAt: null, tradeFeed: "unavailable", quoteModel: null,
-  stateSource: null, stateUpdatedAt: null, migratedTo: null, migratedFrom: null, lastTradeAt: null, launchSignature: null, ...over,
-});
-
-type Script = { sigs: any[][]; txs: Record<string, any>; fail?: (method: string, params: unknown[]) => Error | null; cooling?: () => boolean };
-function harness(script: Script) {
-  let t = 1_000_000;
-  const calls: string[] = [];
-  const svc = createHistoryService({
-    now: () => t, coolingDown: script.cooling ?? (() => false), cooldownUntil: () => t + 5_000,
-    rpc: async <T,>(method: string, params: unknown[]): Promise<T> => {
-      calls.push(method);
-      const f = script.fail?.(method, params); if (f) throw f;
-      if (method === "getSignaturesForAddress") return (script.sigs.shift() ?? []) as T;
-      return (script.txs[params[0] as string] ?? null) as T;
-    },
-  });
-  const m = market();
-  const run = async (sec = 60) => { const s = svc.history(m, m.id, sec); await svc._inflight(m.id); return s; };
-  const snap = (sec = 60) => svc.history(m, m.id, sec);
-  return { svc, m, calls, run, snap, advance: (ms: number) => { t += ms; } };
-}
-const sig = (s: string, slot: number) => ({ signature: s, slot, err: null, blockTime: 1_700_000_000 });
+import { mint, curve, user, eventData, tx, market, harness, sig } from "./helpers.ts";
 
 test("same-slot transactions keep every swap, deduplicate, and order by RPC rank", async () => {
   // RPC returns newest first: B (newer) then A, both in slot 100 and the same second.
@@ -121,7 +68,7 @@ test("busy curve: incremental scan paginates instead of skipping past a gap", as
   const mk = (from: number, n: number) => Array.from({ length: n }, (_, i) => { const id = `T${from + i}`; txs[id] = tx(1000 + from + i, 1_700_000_000 + from + i, [eventData({ sol: 1_000_000n, tok: 1_000_000n, buy: true })]); return sig(id, 1000 + from + i); }).reverse();
   const first = mk(0, 100);
   const newer = mk(100, 250); // 250 new signatures arrive: 3 pages of 100/100/50
-  const h = harness({ sigs: [first, newer.slice(0, 100), newer.slice(100, 200), newer.slice(200)], txs });
+  const h = harness({ sigs: [first, newer.slice(0, 100), newer.slice(100, 200), newer.slice(200)], older: [], txs });
   for (let i = 0; i < 4; i++) { await h.run(); h.advance(3_000); }
   h.advance(25_000);
   for (let i = 0; i < 20; i++) { await h.run(); h.advance(3_000); }
@@ -180,7 +127,7 @@ test("timeframes aggregate the same verified swaps", async () => {
 test("a transaction-level RPC error is retried and does not block other swaps", async () => {
   const txs: Record<string, any> = { OK: tx(7, 1_700_000_000, [eventData({ sol: 1_000_000n, tok: 1_000_000n, buy: true })]) };
   const h = harness({ sigs: [[sig("BAD", 8), sig("OK", 7)]], txs, fail: (m, p) => (m === "getTransaction" && p[0] === "BAD" ? new Error("rpc error -32015") : null) });
-  for (let i = 0; i < 6; i++) { await h.run(); h.advance(3_000); }
+  for (let i = 0; i < 12; i++) { await h.run(); h.advance(61_000); }
   const s = h.snap();
   assert.equal(s.swaps, 1);
   assert.equal(s.transportFailedTransactions, 1);
@@ -192,7 +139,7 @@ test("a transaction-level RPC error is retried and does not block other swaps", 
 
 test("every getTransaction times out: unavailable, never empty or complete", async () => {
   const h = harness({ sigs: [[sig("P", 9), sig("Q", 8)]], txs: {}, fail: (m) => (m === "getTransaction" ? new Error("timeout") : null) });
-  for (let i = 0; i < 6; i++) { await h.run(); h.advance(3_000); }
+  for (let i = 0; i < 12; i++) { await h.run(); h.advance(61_000); }
   const s = h.snap();
   assert.equal(s.state, "unavailable");
   assert.equal(s.transportFailedTransactions, 2);
@@ -246,7 +193,7 @@ test("high volume: retained swaps and open scans are bounded and trimming is dis
   const page = () => Array.from({ length: 100 }, () => { const id = `V${n++}`; txs[id] = tx(10_000 + n, 1_700_000_000 + n, [eventData({ sol: 1_000_000n, tok: 1_000_000n, buy: true }), eventData({ sol: 2_000_000n, tok: 1_000_000n, buy: false })]); return sig(id, 10_000 + n); }).reverse();
   const sigs: any[][] = [page()];
   // Every later scan sees 7 full pages (more than MAX_SCAN_ROWS) of newer activity.
-  const h = harness({ sigs, txs });
+  const h = harness({ sigs, older: [], txs });
   for (let round = 0; round < 6; round++) {
     const burst = Array.from({ length: 7 }, page).reverse(); // newest page first
     for (const p of burst) sigs.push(p);

@@ -4,7 +4,7 @@ import { INTERVALS } from "../../src/lib/market/candles.ts";
 import { config } from "./config.ts";
 import { solUsd, solUsdFresh } from "./solusd.ts";
 import type { Market, Store } from "./store.ts";
-import { history } from "./history/service.ts";
+import { history, onHistoryChange } from "./history/index.ts";
 
 const PUMP_INITIAL_VIRTUAL_SOL = 30;
 
@@ -26,7 +26,7 @@ export function reference() {
   return { "SOL/USD": { price: solUsd.price, updatedAt: solUsd.updatedAt || null, source: solUsd.source, fresh: solUsdFresh() } };
 }
 
-type Client = { ws: WebSocket; topics: Set<string>; pending: Map<string, unknown>; trades: unknown[] };
+type Client = { ws: WebSocket; topics: Set<string>; pending: Map<string, unknown>; trades: unknown[]; charts: Set<string> };
 
 export function startServer(store: Store, statusFn: () => Record<string, unknown>, onViewing: (ids: Set<string>) => void) {
   const cors = (req: http.IncomingMessage, res: http.ServerResponse) => {
@@ -83,8 +83,9 @@ export function startServer(store: Store, statusFn: () => Record<string, unknown
       const tf = u.searchParams.get("tf") ?? "1m";
       const sec = INTERVALS[tf];
       if (!sec) return json(req, res, 400, { error: "unsupported timeframe" });
-      const h = history(store.markets.get(id), id, sec);
-      return json(req, res, 200, { market: id, tf, quoteCcy: "SOL", source: "solana-rpc:pump-trade-event", delivery: "polled", ...h });
+      const h = history(store.markets.get(id), id, sec, { retry: u.searchParams.get("retry") === "1" });
+      const delivery = (h as { live?: { state: string } }).live?.state === "streaming" ? "live+polled" : "polled";
+      return json(req, res, 200, { market: id, tf, quoteCcy: "SOL", source: "solana-rpc:pump-trade-event", delivery, ...h });
     }
     json(req, res, 404, { error: "not found" });
   });
@@ -103,7 +104,7 @@ export function startServer(store: Store, statusFn: () => Record<string, unknown
       ws.close(1008, "origin not allowed");
       return;
     }
-    const c: Client = { ws, topics: new Set(), pending: new Map(), trades: [] };
+    const c: Client = { ws, topics: new Set(), pending: new Map(), trades: [], charts: new Set() };
     clients.add(c);
     ws.send(JSON.stringify({ type: "hello", seq: store.seq, reference: reference() }));
     ws.on("message", (raw) => {
@@ -130,13 +131,17 @@ export function startServer(store: Store, statusFn: () => Record<string, unknown
     }
   });
 
+  // Read-only chart nudge: viewers refetch history for their timeframe (never touches quotes/execution).
+  onHistoryChange((id) => { for (const c of clients) if (c.topics.has(`market:${id}`)) c.charts.add(id); });
+
   // Batched fan-out keeps busy feeds cheap for browsers.
   setInterval(() => {
     for (const c of clients) {
-      if (c.ws.readyState !== WebSocket.OPEN || (!c.pending.size && !c.trades.length)) continue;
-      c.ws.send(JSON.stringify({ type: "batch", seq: store.seq, markets: [...c.pending.values()], trades: c.trades }));
+      if (c.ws.readyState !== WebSocket.OPEN || (!c.pending.size && !c.trades.length && !c.charts.size)) continue;
+      c.ws.send(JSON.stringify({ type: "batch", seq: store.seq, markets: [...c.pending.values()], trades: c.trades, charts: [...c.charts] }));
       c.pending.clear();
       c.trades = [];
+      c.charts.clear();
     }
   }, 300).unref();
   setInterval(() => {
