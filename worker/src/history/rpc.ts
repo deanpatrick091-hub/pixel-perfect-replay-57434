@@ -27,7 +27,10 @@ export function createRpc(o: RpcOptions) {
   const timeoutMs = o.timeoutMs ?? 15_000;
   const retries = o.transportRetries ?? 1;
   const retryDelay = o.retryDelayMs ?? 750;
-  const gap = Math.max(50, Math.round(1000 / Math.max(0.2, o.maxRps)));
+  const baseGap = Math.max(50, Math.round(1000 / Math.max(0.2, o.maxRps)));
+  // Adaptive: each rate limit slows the shared budget (x1.5, down to 1/4 of the configured rate);
+  // it creeps back 5% per 20 consecutive successes. Never faster than configured.
+  let gap = baseGap, okStreak = 0;
   type W = { prio: Priority; seq: number; go: () => void; fail: (e: Error) => void };
   const queue: W[] = [];
   let active = 0, lastStart = 0, cooldownUntil = 0, cooldownReason: "rate_limited" | "forbidden" | null = null, penalty = 0, seq = 0;
@@ -44,6 +47,7 @@ export function createRpc(o: RpcOptions) {
     // 429: 5s doubling to 2min. 403 means the endpoint refuses us: much longer (1min doubling to 10min).
     const base = kind === "forbidden" ? 60_000 : 5_000, cap = kind === "forbidden" ? 600_000 : 120_000;
     penalty = Math.min(penalty ? penalty * 2 : base, cap);
+    gap = Math.min(Math.round(gap * 1.5), baseGap * 4); okStreak = 0; stats.budgetRps = 1000 / gap;
     if (kind === "forbidden") penalty = Math.max(penalty, base);
     cooldownUntil = now() + penalty; cooldownReason = kind;
     stats.cooldownUntil = cooldownUntil; stats.cooldownReason = kind;
@@ -106,6 +110,7 @@ export function createRpc(o: RpcOptions) {
     const ms = now() - t0;
     stats.latencyMs = stats.latencyMs == null ? ms : Math.round(stats.latencyMs * 0.8 + ms * 0.2);
     penalty = Math.floor(penalty / 2);
+    if (++okStreak >= 20 && gap > baseGap) { gap = Math.max(baseGap, Math.round(gap * 0.95)); okStreak = 0; stats.budgetRps = 1000 / gap; }
     return j.result as T;
   }
 

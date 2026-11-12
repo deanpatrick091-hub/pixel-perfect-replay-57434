@@ -25,6 +25,7 @@ class FeedClient {
   private ws: WebSocket | null = null;
   private topics = new Map<string, number>();
   private listeners = new Set<() => void>();
+  private chartListeners = new Map<string, Set<() => void>>();
   private notifyTimer: ReturnType<typeof setTimeout> | null = null;
   private started = false;
   private backoff = 1000;
@@ -127,6 +128,8 @@ class FeedClient {
           tape.unshift(t);
           if (tape.length > 200) tape.length = 200;
         }
+        // Read-only chart nudge: new verified swaps for a viewed market; the chart refetches its timeframe.
+        if (Array.isArray(msg.charts)) for (const id of msg.charts) this.chartListeners.get(id)?.forEach((f) => f());
       }
       this.notify();
     };
@@ -172,14 +175,27 @@ class FeedClient {
     return (await r.json()) as { candles: import("./types").Candle[]; note: string; historyFrom: number | null; quoteCcy: string | null };
   }
 
-  /** Read-only on-chain history (chart only). Returns null on network failure so callers keep their last snapshot. */
-  async history(id: string, tf: string, signal?: AbortSignal) {
+  /** Subscribe to "new verified swaps" nudges for a market (sent over the existing worker socket). */
+  onChart = (id: string, f: () => void) => {
+    let set = this.chartListeners.get(id);
+    if (!set) this.chartListeners.set(id, (set = new Set()));
+    set.add(f);
+    return () => { set!.delete(f); if (!set!.size) this.chartListeners.delete(id); };
+  };
+
+  /** Read-only on-chain history (chart only). Returns null on network failure/timeout so callers keep their last snapshot. */
+  async history(id: string, tf: string, signal?: AbortSignal, opts: { retry?: boolean } = {}) {
     if (!this.workerUrl) return null;
+    // Own timeout (not AbortSignal.any/timeout, which older iOS Safari lacks) so a suspended request can't hang polling.
+    const ctl = new AbortController();
+    const onAbort = () => ctl.abort();
+    signal?.addEventListener("abort", onAbort);
+    const t = setTimeout(() => ctl.abort(), 15_000);
     try {
-      const r = await fetch(`${this.workerUrl}/api/history?market=${encodeURIComponent(id)}&tf=${encodeURIComponent(tf)}`, { signal: signal ?? null });
+      const r = await fetch(`${this.workerUrl}/api/history?market=${encodeURIComponent(id)}&tf=${encodeURIComponent(tf)}${opts.retry ? "&retry=1" : ""}`, { signal: ctl.signal, cache: "no-store" });
       if (!r.ok) return null;
       return (await r.json()) as import("./types").ChartHistory;
-    } catch { return null; }
+    } catch { return null; } finally { clearTimeout(t); signal?.removeEventListener("abort", onAbort); }
   }
 
   watch(topic: string) {

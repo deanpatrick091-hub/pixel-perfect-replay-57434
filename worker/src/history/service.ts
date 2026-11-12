@@ -333,7 +333,7 @@ export function createHistoryService(deps: HistoryDeps) {
   function wantsWork(e: Entry) {
     if (e.inflight) return false;
     const since = now() - e.attemptedAt;
-    if (e.failure) return since >= (e.failure.kind === "rate_limited" ? TTL_MS : FAIL_RETRY_MS);
+    if (e.failure) return since >= FAIL_RETRY_MS; // kick() also waits out any global cooldown
     if (moreWork(e)) return since >= CONTINUE_MS;
     return scanDue(e);
   }
@@ -386,10 +386,13 @@ export function createHistoryService(deps: HistoryDeps) {
     const pend = e.open.size + (e.scan ? e.scan.rows.length : 0);
     const gaps = gapCount(e);
     const coverage: Coverage = !e.scanDoneAt || e.scan || pend || e.back.state === "in_progress" ? "in_progress" : gaps || e.rejectedEvents ? "incomplete" : "complete";
-    const retryAt = blockedByCooldown || e.failure?.kind === "rate_limited" ? (deps.cooldownUntil?.() ?? null) : null;
+    const retryAt = cooling && (blockedByCooldown || e.failure?.kind === "rate_limited") ? (deps.cooldownUntil?.() ?? null) : null;
     let state: HistoryState;
     let error: string | null = e.failure?.message ?? null;
-    if (e.failure) state = e.failure.kind;
+    // A past rate limit whose cooldown has ended isn't the current state: report coverage, keep the time.
+    const staleLimit = e.failure?.kind === "rate_limited" && !cooling;
+    if (staleLimit) error = null;
+    if (e.failure && !staleLimit) state = e.failure.kind;
     else if (blockedByCooldown && coverage !== "complete") { state = "rate_limited"; error = "Solana RPC is cooling down after a rate limit; will retry"; }
     else if (!e.lastRpcAt) state = "loading";
     else if (coverage === "complete") state = used ? "ok" : "empty";
@@ -398,7 +401,7 @@ export function createHistoryService(deps: HistoryDeps) {
     const liveState = deps.live?.state(e.curve) ?? "off";
     return {
       state, coverage, refreshing: !!e.inflight, candles, swaps: used, version: e.version,
-      lastSuccessAt: e.lastRpcAt, lastDataAt: e.lastDataAt, completedAt: e.completedAt, error, failureAt: e.failure?.at ?? null, retryAt,
+      lastRateLimitAt: e.failure?.kind === "rate_limited" ? e.failure.at : null, lastSuccessAt: e.lastRpcAt, lastDataAt: e.lastDataAt, completedAt: e.completedAt, error, failureAt: e.failure?.at ?? null, retryAt,
       scannedTransactions: e.scanned, pendingTransactions: pend,
       missingTransactions: e.missingTx, transportFailedTransactions: e.transportFailedTx, droppedTransactions: e.droppedTx,
       scanGaps: e.scanGaps, trimmedSwaps: e.trimmedSwaps, trimmedBeforeTs: e.trimmedBeforeTs,

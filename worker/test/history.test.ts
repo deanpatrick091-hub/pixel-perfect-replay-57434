@@ -29,16 +29,22 @@ test("same-slot transactions keep every swap, deduplicate, and order by RPC rank
 test("partial progress then 429 keeps a coherent count and success time", async () => {
   const txs: Record<string, any> = {};
   const rows = Array.from({ length: 40 }, (_, i) => { const id = `S${i}`; txs[id] = tx(200 + i, 1_700_000_000 + i * 30, [eventData({ sol: 1_000_000n * BigInt(i + 1), tok: 1_000_000n, buy: true })]); return sig(id, 200 + i); }).reverse();
-  let txCalls = 0;
-  const h = harness({ sigs: [rows], txs, fail: (m) => (m === "getTransaction" && ++txCalls > 10 ? new RpcLimited(429) : null) });
+  let txCalls = 0, cooling = false;
+  const h = harness({ sigs: [rows], txs, cooling: () => cooling, fail: (m) => (m === "getTransaction" && ++txCalls > 10 ? ((cooling = true), new RpcLimited(429)) : null) });
   await h.run();
   const s = h.snap();
   assert.equal(s.state, "rate_limited");
+  assert.ok(s.retryAt);
   assert.equal(s.swaps, 10);
   assert.equal(s.candles.reduce((n, c) => n + c.buys + c.sells, 0), 10);
   assert.ok(s.lastSuccessAt, "successful timestamp kept");
   assert.equal(s.completedAt, null, "scan not complete");
   assert.equal(s.pendingTransactions, 30);
+  cooling = false; // cooldown over: no longer reported as rate limited; the time is kept
+  const after = h.snap();
+  assert.equal(after.state, "partial");
+  assert.ok(after.lastRateLimitAt);
+  assert.equal(after.swaps, 10);
 });
 
 test("empty complete scan is reported as empty, not loading/unavailable", async () => {

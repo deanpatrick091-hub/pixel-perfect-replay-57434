@@ -1,6 +1,6 @@
 import { describe, expect, it, vi, afterEach } from "vitest";
 import { renderHook, act } from "@testing-library/react";
-import { useChartHistory, POLL_IDLE_MS, type HistoryFetcher } from "./useChartHistory";
+import { useChartHistory, POLL_IDLE_MS, POLL_BUSY_MS, MIN_GAP_MS, STUCK_MS, type HistoryFetcher, type NudgeSubscribe } from "./useChartHistory";
 import type { ChartHistory } from "./types";
 
 const snap = (market: string, tf: string, swaps: number, state: ChartHistory["state"] = "ok"): ChartHistory => ({
@@ -90,5 +90,75 @@ describe("useChartHistory polling", () => {
     await flush();
     expect(result.current.data?.tf).toBe("5m");
     expect(fetcher).toHaveBeenLastCalledWith("A", "5m", expect.anything());
+  });
+
+  it("a new-swap nudge refetches right away, coalescing bursts", async () => {
+    vi.useFakeTimers();
+    let fire = () => {};
+    const sub: NudgeSubscribe = (_id, f) => { fire = f; return () => { fire = () => {}; }; };
+    let calls = 0;
+    const fetcher = vi.fn<HistoryFetcher>(async (m, tf) => snap(m, tf, ++calls));
+    renderHook(() => useChartHistory("A", "1m", fetcher, true, sub));
+    await flush();
+    expect(fetcher).toHaveBeenCalledTimes(1);
+    await act(async () => { await vi.advanceTimersByTimeAsync(1_000); });
+    act(() => { fire(); fire(); fire(); });
+    await act(async () => { await vi.advanceTimersByTimeAsync(MIN_GAP_MS); });
+    expect(fetcher).toHaveBeenCalledTimes(2);
+  });
+
+  it("hidden while a request is in flight, then visible: polling resumes (iOS)", async () => {
+    vi.useFakeTimers();
+    let release: (v: ChartHistory) => void = () => {};
+    let calls = 0;
+    const fetcher = vi.fn<HistoryFetcher>((m, tf) => (++calls === 1 ? new Promise<ChartHistory>((r) => { release = r; }) : Promise.resolve(snap(m, tf, 2))));
+    const vis = vi.spyOn(document, "visibilityState", "get");
+    vis.mockReturnValue("visible");
+    const { result } = renderHook(() => useChartHistory("A", "1m", fetcher, true));
+    await flush();
+    vis.mockReturnValue("hidden");
+    act(() => { document.dispatchEvent(new Event("visibilitychange")); });
+    await act(async () => { release(snap("A", "1m", 1)); await vi.advanceTimersByTimeAsync(POLL_IDLE_MS * 3); });
+    expect(fetcher).toHaveBeenCalledTimes(1); // no polling while hidden
+    vis.mockReturnValue("visible");
+    await act(async () => { window.dispatchEvent(new Event("pageshow")); await vi.advanceTimersByTimeAsync(0); });
+    expect(fetcher).toHaveBeenCalledTimes(2);
+    expect(result.current.data?.swaps).toBe(2);
+    vis.mockRestore();
+  });
+
+  it("a stuck request is aborted and retried; network failures retry automatically", async () => {
+    vi.useFakeTimers();
+    let aborted = false;
+    let mode: "hang" | "fail" | "ok" = "hang";
+    const fetcher = vi.fn<HistoryFetcher>((m, tf, signal) => {
+      if (mode === "hang") { signal.addEventListener("abort", () => { aborted = true; }); return new Promise(() => {}); }
+      return Promise.resolve(mode === "fail" ? null : snap(m, tf, 3));
+    });
+    const { result } = renderHook(() => useChartHistory("A", "1m", fetcher, true));
+    await flush();
+    mode = "fail";
+    await act(async () => { await vi.advanceTimersByTimeAsync(STUCK_MS + 5_000); });
+    expect(aborted).toBe(true);
+    expect(result.current.netErr).toBe(true);
+    const n = fetcher.mock.calls.length;
+    mode = "ok";
+    await act(async () => { await vi.advanceTimersByTimeAsync(6_000); });
+    expect(fetcher.mock.calls.length).toBeGreaterThan(n);
+    expect(result.current.netErr).toBe(false);
+    expect(result.current.data?.swaps).toBe(3);
+  });
+
+  it("retry() asks the worker to retry now", async () => {
+    vi.useFakeTimers();
+    const fetcher = vi.fn<HistoryFetcher>(async (m, tf) => snap(m, tf, 0, "unavailable"));
+    const { result } = renderHook(() => useChartHistory("A", "1m", fetcher, true));
+    await flush();
+    await act(async () => { await vi.advanceTimersByTimeAsync(MIN_GAP_MS); result.current.retry(); await vi.advanceTimersByTimeAsync(0); });
+    expect(fetcher).toHaveBeenLastCalledWith("A", "1m", expect.anything(), { retry: true });
+    // unavailable polls at the busy interval, not idle
+    const n = fetcher.mock.calls.length;
+    await act(async () => { await vi.advanceTimersByTimeAsync(POLL_BUSY_MS); });
+    expect(fetcher.mock.calls.length).toBe(n + 1);
   });
 });
