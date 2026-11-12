@@ -160,7 +160,7 @@ export function PriceChart({ marketId, quoteCcy, tick, liveTrades }: { marketId:
     const out: string[] = [];
     out.push("Source: Pump.fun TradeEvents decoded from confirmed transactions via free public Solana RPC (read-only; never used for prices or paper orders).");
     out.push(streaming
-      ? `Delivery: live hints from Solana logsSubscribe for this curve, each swap fetched and validated before charting, plus polled catch-up.${h.live?.hintToChartMs != null ? ` Last live swap charted ${(h.live.hintToChartMs / 1000).toFixed(1)}s after its notification (${((h.live.chainToChartMs ?? 0) / 1000).toFixed(1)}s after block time).` : ""}`
+      ? `Delivery: live hints from Solana logsSubscribe for this curve, each swap fetched and validated before charting, plus polled catch-up.${h.live?.hintToChartMs != null ? ` Last live swap charted ${(h.live.hintToChartMs / 1000).toFixed(1)}s after its notification (${((h.live.chainToChartMs ?? 0) / 1000).toFixed(1)}s after block time)${h.live.hintToChartMedianMs != null ? `; median ${(h.live.hintToChartMedianMs / 1000).toFixed(1)}s over recent live swaps` : ""}. Every confirmed swap isn't guaranteed to arrive live; the polled catch-up fills misses.` : ""}`
       : `Delivery: polled history (not tick streaming)${h.live?.state && h.live.state !== "off" ? ` — live stream ${h.live.state}${h.live.error ? ` (${h.live.error})` : ""}` : ""}. New swaps can take several seconds to appear.`);
     if (h.oldestTs && h.newestTs) out.push(`Range: swaps from ${new Date(h.oldestTs * 1000).toLocaleTimeString()} to ${new Date(h.newestTs * 1000).toLocaleTimeString()}.`);
     const b = h.backfill;

@@ -54,7 +54,7 @@ interface Entry {
   lastRpcAt: number | null; lastDataAt: number | null; scanDoneAt: number | null; completedAt: number | null; attemptedAt: number;
   failure: { kind: "rate_limited" | "unavailable"; message: string; at: number } | null;
   lastTxError: { message: string; at: number } | null;
-  live: { hints: number; swaps: number; lastHintAt: number | null; hintToChartMs: number | null; chainToChartMs: number | null };
+  live: { hints: number; swaps: number; lastHintAt: number | null; hintToChartMs: number | null; chainToChartMs: number | null; samples: number[] };
   inflight: Promise<void> | null; again: boolean; lastUsed: number; version: number; built: { version: number; builder: CandleBuilder } | null;
 }
 
@@ -97,7 +97,9 @@ export function orderSwaps<T extends { slot: number; rank: number; txIndex: numb
   });
 }
 
-const retryDelay = (tries: number) => Math.min(RETRY_BASE_MS * 2 ** (tries - 1), RETRY_MAX_MS);
+// Live hints often arrive before the RPC node serves the transaction: retry those quickly (1s, 2s, 3s… capped at 5s).
+const retryDelay = (tries: number, prio: Priority) =>
+  prio === 0 ? Math.min(RETRY_BASE_MS * tries, 5_000) : Math.min(RETRY_BASE_MS * 2 ** (tries - 1), RETRY_MAX_MS);
 
 export function createHistoryService(deps: HistoryDeps) {
   const now = deps.now ?? Date.now;
@@ -113,7 +115,7 @@ export function createHistoryService(deps: HistoryDeps) {
         back: { state: "waiting", before: null, listed: 0, floorTs: null, oldestTs: null },
         highRank: 0, lowRank: 0, scanned: 0, nonSwapTx: 0, failedTx: 0, rejectedEvents: 0, missingTx: 0, transportFailedTx: 0, droppedTx: 0, scanGaps: 0,
         trimmedSwaps: 0, trimmedBeforeTs: null, lastRpcAt: null, lastDataAt: null, scanDoneAt: null, completedAt: null, attemptedAt: 0,
-        failure: null, lastTxError: null, live: { hints: 0, swaps: 0, lastHintAt: null, hintToChartMs: null, chainToChartMs: null },
+        failure: null, lastTxError: null, live: { hints: 0, swaps: 0, lastHintAt: null, hintToChartMs: null, chainToChartMs: null, samples: [] },
         inflight: null, again: false, lastUsed: now(), version: 0, built: null };
       cache.set(m.id, e); byCurve.set(m.address, e);
       if (cache.size > MAX_ENTRIES) {
@@ -240,7 +242,7 @@ export function createHistoryService(deps: HistoryDeps) {
     s.lastErr = kind;
     s.tries++;
     if (s.tries >= MAX_TRIES) { finish(e, s); if (kind === "null") e.missingTx++; else e.transportFailedTx++; }
-    else s.nextTryAt = now() + retryDelay(s.tries);
+    else s.nextTryAt = now() + retryDelay(s.tries, s.prio);
   }
 
   async function decodeTransactions(e: Entry, maxPrio: Priority, budget: number) {
@@ -281,6 +283,8 @@ export function createHistoryService(deps: HistoryDeps) {
           e.live.swaps += added; stats.liveSwaps += added;
           e.live.hintToChartMs = now() - s.hintAt;
           e.live.chainToChartMs = now() - r.swaps[0].blockTime * 1000;
+          e.live.samples.push(e.live.hintToChartMs);
+          if (e.live.samples.length > 50) e.live.samples.shift();
         }
         trimSwaps(e);
         deps.onChange?.(e.marketId);
@@ -316,6 +320,12 @@ export function createHistoryService(deps: HistoryDeps) {
   function moreWork(e: Entry) {
     return !!e.scan || backfillDue(e) || [...e.open].some((s) => !s.busy);
   }
+  /** Soonest time a waiting retry becomes due (so follow-up work is scheduled for it, not only for ready work). */
+  function nextDue(e: Entry) {
+    let t = Infinity;
+    for (const s of e.open) if (!s.busy && s.nextTryAt < t) t = s.nextTryAt;
+    return t;
+  }
 
   function kick(e: Entry) {
     if (e.inflight) { e.again = true; return; }
@@ -326,7 +336,11 @@ export function createHistoryService(deps: HistoryDeps) {
     })().finally(() => {
       e.inflight = null;
       // Keep working while someone is viewing; polling also drives this, so a missed timer is harmless.
-      if (viewed(e) && !e.failure && moreWork(e)) later(() => { if (!e.inflight && viewed(e)) kick(e); }, CONTINUE_MS);
+      if (viewed(e) && !e.failure && moreWork(e)) {
+        const due = nextDue(e);
+        const wait = e.scan || backfillDue(e) ? CONTINUE_MS : Math.max(250, Math.min(CONTINUE_MS * 4, (Number.isFinite(due) ? due : now()) - now()));
+        later(() => { if (!e.inflight && viewed(e)) kick(e); }, wait);
+      }
     });
   }
 
@@ -412,6 +426,7 @@ export function createHistoryService(deps: HistoryDeps) {
       live: {
         state: liveState, hints: e.live.hints, swaps: e.live.swaps, lastHintAt: e.live.lastHintAt,
         hintToChartMs: e.live.hintToChartMs, chainToChartMs: e.live.chainToChartMs,
+        hintToChartMedianMs: e.live.samples.length ? [...e.live.samples].sort((a, b) => a - b)[Math.floor(e.live.samples.length / 2)] : null,
         reconnects: deps.live?.stats.reconnects ?? 0, failedExcluded: deps.live?.stats.failedExcluded ?? 0, error: liveState === "streaming" ? null : deps.live?.stats.lastError ?? null,
       },
     };

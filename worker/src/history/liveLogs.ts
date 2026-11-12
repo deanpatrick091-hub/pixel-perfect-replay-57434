@@ -18,7 +18,7 @@ export function createLiveLogs(o: LiveOptions) {
   const now = o.now ?? Date.now;
   const connect = o.connect ?? ((u: string) => new WebSocket(u) as unknown as Sock);
   let ws: Sock | null = null, open = false, backoff = 1_000, nextId = 1, everOpen = false, closedByUs = false;
-  let reconnectTimer: ReturnType<typeof setTimeout> | null = null, lastMsgAt = 0;
+  let reconnectTimer: ReturnType<typeof setTimeout> | null = null, lastMsgAt = 0, dropped = false;
   const wanted = new Set<string>();
   const subs = new Map<string, { id: number | null; reqId: number; since: number }>(); // curve -> server subscription
   const byReq = new Map<number, string>(), bySub = new Map<number, string>(), unsubReqs = new Set<number>();
@@ -44,7 +44,9 @@ export function createLiveLogs(o: LiveOptions) {
     ws = sock;
     sock.on("open", () => {
       open = true; backoff = 1_000; lastMsgAt = now();
-      if (everOpen) { stats.reconnects++; o.onReconnect?.([...wanted]); }
+      // Only an unexpected drop counts as a reconnect (and needs catch-up); idle close/reopen doesn't.
+      if (dropped) { stats.reconnects++; o.onReconnect?.([...wanted]); }
+      dropped = false; stats.lastError = null;
       everOpen = true;
       for (const c of wanted) subscribe(c);
     });
@@ -75,7 +77,7 @@ export function createLiveLogs(o: LiveOptions) {
       ws = null; open = false;
       subs.clear(); byReq.clear(); bySub.clear(); unsubReqs.clear(); stats.subscribed = 0;
       if (closedByUs) return;
-      stats.lastError = why;
+      stats.lastError = why; dropped = true;
       const wait = backoff; backoff = Math.min(backoff * 2, 30_000);
       log("warn", "solana ws disconnected", { why, retryMs: wait });
       if (wanted.size) reconnectTimer = setTimeout(() => { reconnectTimer = null; start(); }, wait);
@@ -98,7 +100,7 @@ export function createLiveLogs(o: LiveOptions) {
     for (const c of [...wanted]) if (!next.has(c)) { wanted.delete(c); unsubscribe(c); }
     for (const c of next) if (!wanted.has(c)) { wanted.add(c); if (open) subscribe(c); }
     if (wanted.size && !ws && !reconnectTimer) start();
-    if (!wanted.size && ws) { const s = ws; ws = null; open = false; subs.clear(); try { s.close(); } catch { /* */ } }
+    if (!wanted.size && ws) { const s = ws; ws = null; open = false; subs.clear(); byReq.clear(); bySub.clear(); stats.subscribed = 0; try { s.close(); } catch { /* */ } }
   }
 
   function state(curve: string): CurveLiveState {
@@ -106,7 +108,7 @@ export function createLiveLogs(o: LiveOptions) {
     const s = subs.get(curve);
     if (open && s?.id != null) return "streaming";
     if (open) return s ? "subscribing" : "unavailable";
-    return everOpen || stats.connects > 1 ? "reconnecting" : "subscribing";
+    return dropped ? "reconnecting" : "subscribing";
   }
   function stop() { closedByUs = true; clearInterval(ping); if (reconnectTimer) clearTimeout(reconnectTimer); ws?.close(); ws = null; }
   return { setWanted, state, stats, stop, since: (c: string) => subs.get(c)?.since ?? null };
