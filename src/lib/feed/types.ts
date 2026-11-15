@@ -16,7 +16,7 @@ export interface Trade {
   quoteCcy: string; priceQuote: number; sourceTs: number | null; receivedAt: number; trader: string | null;
 }
 
-export interface Candle { t: number; o: number; h: number; l: number; c: number; v: number; buys: number; sells: number }
+export interface Candle { t: number; o: number; h: number; l: number; c: number; v: number; buys: number; sells: number; buyVolume?: number; sellVolume?: number }
 
 export interface Reference { "SOL/USD": { price: number | null; updatedAt: number | null; source: string; fresh: boolean } }
 

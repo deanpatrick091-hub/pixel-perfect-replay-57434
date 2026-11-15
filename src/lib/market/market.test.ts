@@ -63,4 +63,18 @@ describe("candles", () => {
     expect(m[0]).toMatchObject({ t: 60, o: 1, c: 2, buys: 1, sells: 1 });
     expect(m[1]).toMatchObject({ t: 120, o: 4 });
   });
+  it("verified side, not bullish/bearish colour, determines quote volume in every timeframe", () => {
+    const c = new CandleBuilder();
+    c.add(ev("a", 60_000, 3, "buy"));
+    c.add(ev("b", 61_000, 1, "buy")); // down candle, but entirely buy volume
+    c.add(ev("s", 180_000, 2, "sell"));
+    expect(c.candles(60)[0]).toMatchObject({ o: 3, c: 1, v: 4, buyVolume: 4, sellVolume: 0 });
+    for (const sec of [1, 5, 15, 60, 300, 900, 3600, 14400, 86400]) {
+      const bars = c.candles(sec);
+      expect(bars.reduce((n, b) => n + b.buyVolume, 0)).toBe(4);
+      expect(bars.reduce((n, b) => n + b.sellVolume, 0)).toBe(2);
+      expect(bars.reduce((n, b) => n + b.v, 0)).toBe(6);
+    }
+    expect(c.candles(60).map((b) => b.t)).toEqual([60, 180]);
+  });
 });

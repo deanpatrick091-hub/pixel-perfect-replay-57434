@@ -17,6 +17,8 @@ export interface Candle {
   l: number;
   c: number;
   v: number; // quote volume
+  buyVolume: number; // quote notional from verified buy direction, never candle colour
+  sellVolume: number;
   buys: number;
   sells: number;
 }
@@ -55,13 +57,17 @@ export class CandleBuilder {
     if (!(e.price > 0) || !Number.isFinite(e.price)) return false;
     this.seen.add(e.id);
     this.seenOrder.push(e.id);
-    if (this.seenOrder.length > this.maxSeen) this.seen.delete(this.seenOrder.shift()!);
+    if (this.seenOrder.length > this.maxSeen) {
+      const oldest = this.seenOrder.shift();
+      if (oldest !== undefined) this.seen.delete(oldest);
+    }
 
     const t = Math.floor(e.ts / 1000);
     const b = this.buckets.get(t);
     if (!b) {
       this.buckets.set(t, {
         t, o: e.price, h: e.price, l: e.price, c: e.price, v: e.quoteQty,
+        buyVolume: e.side === "buy" ? e.quoteQty : 0, sellVolume: e.side === "sell" ? e.quoteQty : 0,
         buys: e.side === "buy" ? 1 : 0, sells: e.side === "sell" ? 1 : 0,
         oTs: e.ts, oId: e.id, cTs: e.ts, cId: e.id,
       });
@@ -74,6 +80,8 @@ export class CandleBuilder {
     b.h = Math.max(b.h, e.price);
     b.l = Math.min(b.l, e.price);
     b.v += e.quoteQty;
+    if (e.side === "buy") b.buyVolume += e.quoteQty;
+    else b.sellVolume += e.quoteQty;
     if (e.side === "buy") b.buys++;
     else b.sells++;
     if (e.ts < b.oTs || (e.ts === b.oTs && e.id < b.oId)) {
@@ -90,16 +98,19 @@ export class CandleBuilder {
     const out: Candle[] = [];
     let cur: Candle | null = null;
     for (const k of keys) {
-      const b = this.buckets.get(k)!;
+      const b = this.buckets.get(k);
+      if (!b) continue;
       const t = Math.floor(k / intervalSec) * intervalSec;
       if (!cur || cur.t !== t) {
-        cur = { t, o: b.o, h: b.h, l: b.l, c: b.c, v: b.v, buys: b.buys, sells: b.sells };
+        cur = { t, o: b.o, h: b.h, l: b.l, c: b.c, v: b.v, buys: b.buys, sells: b.sells, buyVolume: b.buyVolume, sellVolume: b.sellVolume };
         out.push(cur);
       } else {
         cur.h = Math.max(cur.h, b.h);
         cur.l = Math.min(cur.l, b.l);
         cur.c = b.c;
         cur.v += b.v;
+        cur.buyVolume += b.buyVolume;
+        cur.sellVolume += b.sellVolume;
         cur.buys += b.buys;
         cur.sells += b.sells;
       }

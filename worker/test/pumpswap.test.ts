@@ -106,6 +106,8 @@ test("PumpSwap history/live dedup, all timeframes OHLCV, cooldown coherence and 
   assert.equal(calls.filter((c) => c === "getTransaction").length, 2);
   for (const sec of [1, 5, 15, 60, 300, 900, 3600, 14400, 86400]) {
     const h = svc.history(m, m.id, sec); assert.equal(h.swaps, 2); assert.equal(h.candles.reduce((n, c) => n + c.v, 0), 3);
+    assert.equal(h.candles.reduce((n, c) => n + c.buyVolume, 0), 2);
+    assert.equal(h.candles.reduce((n, c) => n + c.sellVolume, 0), 1);
   }
   const c = svc.history(m, m.id, 86400).candles[0];
   assert.deepEqual([c.o, c.h, c.l, c.c, c.buys, c.sells], [2, 2, 1, 1, 1, 1]);
