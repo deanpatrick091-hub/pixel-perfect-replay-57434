@@ -117,6 +117,11 @@ export function createHistoryService(deps: HistoryDeps) {
 
   function entry(m: Market): Entry {
     let e = cache.get(m.id);
+    // Never reuse a verified pool snapshot if market metadata changes its mint or kind.
+    if (e && (e.mint !== m.mint || e.curve !== m.address || e.kind !== m.kind)) {
+      cache.delete(m.id); byCurve.delete(e.curve); e.lastUsed = -Infinity;
+      e = undefined;
+    }
     if (!e) {
       e = { marketId: m.id, curve: m.address, mint: m.mint, kind: m.kind, pool: null, poolError: null, sigs: new Map(), open: new Set(), swaps: new Map(), newestSig: null, scan: null,
         back: { state: "waiting", before: null, listed: 0, floorTs: null, oldestTs: null },

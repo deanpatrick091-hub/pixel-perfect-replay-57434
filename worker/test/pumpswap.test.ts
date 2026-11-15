@@ -122,6 +122,8 @@ test("unverified PumpSwap pool never scans or subscribes; transport failure rema
   good = true; svc.history(m, m.id, 60, { retry: true }); await svc._inflight(m.id);
   assert.equal(svc.history(m, m.id, 60).state, "empty"); assert.deepEqual(svc.viewedCurves(), [pool.address]);
   const wrong = { ...m, mint: key() };
+  svc.history(wrong, wrong.id, 60); await svc._inflight(wrong.id);
+  assert.equal(svc.history(wrong, wrong.id, 60).state, "unsupported", "changed mint must not reuse a verified cached pool");
   const invalid = createHistoryService({ coolingDown: () => false, later: () => {}, rpc: async <T,>(): Promise<T> => ({ value: account }) as T });
   invalid.history(wrong, wrong.id, 60); await invalid._inflight(wrong.id);
   assert.equal(invalid.history(wrong, wrong.id, 60).state, "unsupported"); assert.deepEqual(invalid.viewedCurves(), []);
