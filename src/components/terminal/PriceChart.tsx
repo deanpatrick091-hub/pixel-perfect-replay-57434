@@ -158,14 +158,14 @@ export function PriceChart({ marketId, quoteCcy, tick, liveTrades }: { marketId:
   const diag = ((): string[] => {
     if (!h || historyOff) return h?.error ? [h.error] : [];
     const out: string[] = [];
-    out.push("Source: Pump.fun TradeEvents decoded from confirmed transactions via free public Solana RPC (read-only; never used for prices or paper orders).");
+    out.push(`Source: ${h.marketKind === "amm" ? "PumpSwap Buy/Sell events (exact on-chain pool and mint verified; gross SOL swap notional, excluding separately reported fees)" : "Pump.fun TradeEvents"} decoded from confirmed transactions via free public Solana RPC (read-only; never used for prices or paper orders).`);
     out.push(streaming
-      ? `Delivery: live hints from Solana logsSubscribe for this curve, each swap fetched and validated before charting, plus polled catch-up.${h.live?.hintToChartMs != null ? ` Last live swap charted ${(h.live.hintToChartMs / 1000).toFixed(1)}s after its notification (${((h.live.chainToChartMs ?? 0) / 1000).toFixed(1)}s after block time)${h.live.hintToChartMedianMs != null ? `; median ${(h.live.hintToChartMedianMs / 1000).toFixed(1)}s over recent live swaps` : ""}. Every confirmed swap isn't guaranteed to arrive live; the polled catch-up fills misses.` : ""}`
+      ? `Delivery: live hints from Solana logsSubscribe for this market address, each swap fetched and validated before charting, plus polled catch-up.${h.live?.hintToChartMs != null ? ` Last live swap charted ${(h.live.hintToChartMs / 1000).toFixed(1)}s after its notification (${((h.live.chainToChartMs ?? 0) / 1000).toFixed(1)}s after block time)${h.live.hintToChartMedianMs != null ? `; median ${(h.live.hintToChartMedianMs / 1000).toFixed(1)}s over recent live swaps` : ""}. Every confirmed swap isn't guaranteed to arrive live; the polled catch-up fills misses.` : ""}`
       : `Delivery: polled history (not tick streaming)${h.live?.state && h.live.state !== "off" ? ` — live stream ${h.live.state}${h.live.error ? ` (${h.live.error})` : ""}` : ""}. New swaps can take several seconds to appear.`);
     if (h.oldestTs && h.newestTs) out.push(`Range: swaps from ${new Date(h.oldestTs * 1000).toLocaleTimeString()} to ${new Date(h.newestTs * 1000).toLocaleTimeString()}.`);
     const b = h.backfill;
     if (b) out.push(b.state === "in_progress" ? `Older history: loading (${b.listedSignatures} of max ${b.maxSignatures} transactions listed).`
-      : b.state === "done_start" ? "Older history: complete back to the curve's first transaction."
+      : b.state === "done_start" ? "Older history: complete back to the market address's first transaction."
       : b.state === "done_limit" ? `Older history: stopped at the ${b.maxSignatures}-transaction limit${b.oldestListedTs ? ` (${new Date(b.oldestListedTs * 1000).toLocaleTimeString()})` : ""}; earlier swaps are not fetched.`
       : b.state === "done_age" ? `Older history: limited to ${Math.round(b.maxAgeSec / 60)} minutes before first view; earlier swaps are not fetched.` : "Older history: waiting for the first page.");
     const gaps = [
@@ -177,7 +177,7 @@ export function PriceChart({ marketId, quoteCcy, tick, liveTrades }: { marketId:
       h.rejectedEvents ? `${h.rejectedEvents} events rejected by validation` : "",
     ].filter(Boolean);
     if (gaps.length) out.push(`Coverage gaps: ${gaps.join(" · ")}.`);
-    if (h.curveStatus && h.curveStatus !== "active") out.push("Curve completed — these are its pre-migration swaps; the destination pool isn't charted.");
+    if (h.marketKind !== "amm" && h.curveStatus && h.curveStatus !== "active") out.push("Curve completed — these are its pre-migration swaps; open the destination market for its separate pool history.");
     if (h.error) out.push(`Last error: ${h.error}`);
     if (h.lastRateLimitAt) out.push(`Last rate limit: ${clock(h.lastRateLimitAt)}.`);
     out.push(`Last RPC contact ${clock(h.lastSuccessAt)}${h.completedAt ? ` · coverage complete ${clock(h.completedAt)}` : ""}.`);
@@ -190,10 +190,10 @@ export function PriceChart({ marketId, quoteCcy, tick, liveTrades }: { marketId:
     if (useLive) return live ? <>No swaps observed for this market yet.<br />{live.note}</> : null;
     if (!h) return null;
     if (historyOff) return <>{h.error}</>;
-    if (h.state === "empty") return <>No successful swaps found in this curve's recent transactions.</>;
+    if (h.state === "empty") return <>No successful swaps found in this market's recent transactions.</>;
     if (h.state === "rate_limited") return <>Waiting for the free Solana RPC to allow more requests…</>;
     if (h.state === "unavailable") return <>On-chain history couldn't be loaded yet. Retrying automatically.</>;
-    if (h.state === "partial" && !(h.pendingTransactions ?? 0)) return <>No verified swaps decoded yet — some transactions couldn't be loaded or verified, so this isn't proof the curve had none.</>;
+    if (h.state === "partial" && !(h.pendingTransactions ?? 0)) return <>No verified swaps decoded yet — some transactions couldn't be loaded or verified, so this isn't proof the market had none.</>;
     return <>Loading recent swaps…</>;
   })();
 

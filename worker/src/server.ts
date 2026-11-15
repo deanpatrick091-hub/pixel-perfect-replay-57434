@@ -85,7 +85,7 @@ export function startServer(store: Store, statusFn: () => Record<string, unknown
       if (!sec) return json(req, res, 400, { error: "unsupported timeframe" });
       const h = history(store.markets.get(id), id, sec, { retry: u.searchParams.get("retry") === "1" });
       const delivery = (h as { live?: { state: string } }).live?.state === "streaming" ? "live+polled" : "polled";
-      return json(req, res, 200, { market: id, tf, quoteCcy: "SOL", source: "solana-rpc:pump-trade-event", delivery, ...h });
+      return json(req, res, 200, { market: id, tf, quoteCcy: "SOL", delivery, ...h });
     }
     json(req, res, 404, { error: "not found" });
   });

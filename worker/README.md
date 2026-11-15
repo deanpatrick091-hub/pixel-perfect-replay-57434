@@ -64,7 +64,14 @@ Opened Pump.fun bonding-curve markets get candles from on-chain swaps via free p
 - Swap identity is `signature:instructionPosition`. Chart order is slot, then the RPC's `transactionIndex` when every swap in that slot has a valid one (live-hinted swaps learn it from the next listing), else RPC listing rank (deterministic, not guaranteed execution order), then event position.
 - Coverage is `complete` only when nothing is pending, failed to load, missing, dropped, trimmed or rejected and backfill has stopped; otherwise the chart shows partial/unavailable with counts. Retained swaps (5,000), processed signatures (3,000) and open scan rows (600) are capped per market; trimming and scan gaps are disclosed.
 - All timeframes (`1s`…`1D`) aggregate the same verified swaps. A candle's close/high/low/volume change with each swap; a new candle appears only when a swap lands in a new interval (quiet intervals have no candle).
-- Migrated AMM pools are not charted; completed curves show their pre-migration swaps.
+- SOL-quoted PumpSwap AMM pools have their own separate chart history: the selected pool's account owner,
+  Pool discriminator, PDA/bump, base mint, Wrapped SOL quote and vaults are verified through the same budgeted RPC.
+  Only successful BuyEvent/SellEvent self-CPIs under official buy/sell (including v2) instructions with matching
+  pool/mint/vault/user accounts and transaction vault decimals (6/9) are charted. Unrelated routed pools and
+  transfers are excluded; malformed selected-pool events disclose incomplete coverage. Prices and volume use
+  gross `quote_amount_in/out` / `base_amount_out/in`, excluding separately reported fees, not max/min limits.
+  The same viewed-address live hints, polling, bounds, status and all timeframes apply. Other AMM venues and
+  non-SOL quotes remain unsupported; completed curves show only pre-migration swaps, never combined with pool candles.
 This data is never used for quotes or paper execution.
 - `SOLANA_RPC_URL` (optional) — defaults to the free public `https://api.mainnet-beta.solana.com`.
 - `SOLANA_RPC_MAX_RPS` (optional, default 2) · `SOLANA_RPC_TIMEOUT_MS` (default 15000).

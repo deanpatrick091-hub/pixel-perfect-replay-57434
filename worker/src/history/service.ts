@@ -2,6 +2,8 @@ import { CandleBuilder, type Candle } from "../../../src/lib/market/candles.ts";
 import { log } from "../log.ts";
 import { RpcBusy, RpcForbidden, RpcLimited, isBackoff, type Priority } from "./rpc.ts";
 import { bondingCurvePda, extractSwaps, type VerifiedSwap } from "./pumpEvents.ts";
+import { PublicKey } from "@solana/web3.js";
+import { PoolInvalid, verifyPoolAccount, extractPumpSwapSwaps, type VerifiedPool } from "./pumpSwapEvents.ts";
 import { marketId, type Market } from "../store.ts";
 
 // Read-only chart history for viewed Pump.fun curves, from public Solana RPC.
@@ -44,7 +46,7 @@ interface RankedSwap extends VerifiedSwap { rank: number; txIndex: number | null
 interface SigRow { signature: string; slot: number; err: unknown; blockTime: number | null; transactionIndex?: number | null }
 
 interface Entry {
-  marketId: string; curve: string; mint: string;
+  marketId: string; curve: string; mint: string; kind: Market["kind"]; pool: VerifiedPool | null; poolError: string | null;
   sigs: Map<string, SigMeta>; open: Set<SigMeta>; swaps: Map<string, RankedSwap>;
   newestSig: string | null;
   scan: { until: string | null; before: string | null; rows: SigRow[] } | null;
@@ -73,7 +75,12 @@ export type Support = { ok: true; curveStatus: Market["status"] } | { ok: false;
 export function checkSupport(m: Market | undefined, id: string): Support {
   if (!m || m.id !== id) return { ok: false, state: "unknown_market", reason: "The connected market worker isn't tracking this market (it may have restarted), so its history can't be checked." };
   if (m.chain !== "solana") return { ok: false, state: "unsupported", reason: "On-chain history is only implemented for Solana markets." };
-  if (m.kind === "amm") return { ok: false, state: "unsupported", reason: `Chart history for ${m.venue} AMM pools isn't implemented. Only Pump.fun bonding-curve swaps are decoded.` };
+  if (m.kind === "amm") {
+    if (m.venue !== "pumpswap" || m.quoteCcy !== "SOL") return { ok: false, state: "unsupported", reason: "Only verified SOL-quoted PumpSwap pools have AMM chart history." };
+    try { new PublicKey(m.address); new PublicKey(m.mint); } catch { return { ok: false, state: "unsupported", reason: "Invalid PumpSwap pool or mint address." }; }
+    if (id !== marketId("solana", "amm", m.address)) return { ok: false, state: "unsupported", reason: "Market id does not match its pool address." };
+    return { ok: true, curveStatus: m.status };
+  }
   if (m.venue !== "pumpfun") return { ok: false, state: "unsupported", reason: `Chart history for ${m.venue} isn't implemented.` };
   if (m.quoteCcy !== "SOL") return { ok: false, state: "unsupported", reason: `Only SOL-quoted curves are decoded (this one is quoted in ${m.quoteCcy}).` };
   if (id !== marketId("solana", "curve", m.address)) return { ok: false, state: "unsupported", reason: "Market id does not match its curve address." };
@@ -92,7 +99,7 @@ export function orderSwaps<T extends { slot: number; rank: number; txIndex: numb
   return [...list].sort((a, b) => {
     if (a.slot !== b.slot) return a.slot - b.slot;
     const useIdx = slotHasAllIdx.get(a.slot);
-    const d = useIdx ? a.txIndex! - b.txIndex! : a.rank - b.rank;
+    const d = useIdx && a.txIndex != null && b.txIndex != null ? a.txIndex - b.txIndex : a.rank - b.rank;
     return d || a.rank - b.rank || a.eventIndex - b.eventIndex;
   });
 }
@@ -111,7 +118,7 @@ export function createHistoryService(deps: HistoryDeps) {
   function entry(m: Market): Entry {
     let e = cache.get(m.id);
     if (!e) {
-      e = { marketId: m.id, curve: m.address, mint: m.mint, sigs: new Map(), open: new Set(), swaps: new Map(), newestSig: null, scan: null,
+      e = { marketId: m.id, curve: m.address, mint: m.mint, kind: m.kind, pool: null, poolError: null, sigs: new Map(), open: new Set(), swaps: new Map(), newestSig: null, scan: null,
         back: { state: "waiting", before: null, listed: 0, floorTs: null, oldestTs: null },
         highRank: 0, lowRank: 0, scanned: 0, nonSwapTx: 0, failedTx: 0, rejectedEvents: 0, missingTx: 0, transportFailedTx: 0, droppedTx: 0, scanGaps: 0,
         trimmedSwaps: 0, trimmedBeforeTs: null, lastRpcAt: null, lastDataAt: null, scanDoneAt: null, completedAt: null, attemptedAt: 0,
@@ -267,7 +274,7 @@ export function createHistoryService(deps: HistoryDeps) {
       if (tx == null || typeof tx.blockTime !== "number") { retryLater(e, s, "null"); continue; }
       finish(e, s);
       e.scanned++;
-      const r = extractSwaps(tx, s.signature, e.curve, e.mint);
+      const r = e.pool ? extractPumpSwapSwaps(tx, s.signature, e.pool) : extractSwaps(tx, s.signature, e.curve, e.mint);
       e.rejectedEvents += r.rejectedEvents;
       if (r.reason === "failed_tx") e.failedTx++;
       else if (!r.swaps.length) e.nonSwapTx++;
@@ -300,6 +307,13 @@ export function createHistoryService(deps: HistoryDeps) {
     stats.refreshes++;
     e.attemptedAt = now();
     try {
+      if (e.kind === "amm" && !e.pool) {
+        const result = await deps.rpc<{ value: unknown }>("getAccountInfo", [e.curve, { encoding: "base64", commitment: "confirmed" }], 1);
+        e.lastRpcAt = now();
+        // A temporarily missing account is retryable, not proof of an unsupported venue.
+        if (!result?.value) throw new Error("PumpSwap pool account not returned by RPC; retrying verification");
+        e.pool = verifyPoolAccount(e.curve, e.mint, result.value);
+      }
       await decodeTransactions(e, 0, 10);                 // live hints first
       if (scanDue(e)) await scanSignatures(e);            // newest signatures (gap-safe catch-up)
       await decodeTransactions(e, 2, TX_PER_REFRESH);     // live > recent > backfill
@@ -308,6 +322,7 @@ export function createHistoryService(deps: HistoryDeps) {
       if (!e.scan && e.open.size === 0 && e.back.state !== "in_progress" && gapCount(e) === 0 && e.rejectedEvents === 0) e.completedAt = now();
     } catch (err) {
       stats.failures++;
+      if (err instanceof PoolInvalid) e.poolError = err.message;
       e.failure = err instanceof RpcLimited
         ? { kind: "rate_limited", message: `Solana RPC rate limited (HTTP ${err.status}); backing off`, at: now() }
         : err instanceof RpcForbidden
@@ -328,6 +343,7 @@ export function createHistoryService(deps: HistoryDeps) {
   }
 
   function kick(e: Entry) {
+    if (e.poolError) return;
     if (e.inflight) { e.again = true; return; }
     if (deps.coolingDown()) return;
     e.inflight = (async () => {
@@ -355,7 +371,7 @@ export function createHistoryService(deps: HistoryDeps) {
   /** A confirmed, non-failed transaction mentioned a viewed curve: fetch and validate it before anything else. */
   function hint(h: { curve: string; signature: string; slot: number; receivedAt: number }) {
     const e = byCurve.get(h.curve);
-    if (!e) return;
+    if (!e || !viewed(e) || e.poolError || (e.kind === "amm" && !e.pool)) return;
     stats.liveHints++; e.live.hints++; e.live.lastHintAt = h.receivedAt;
     const known = e.sigs.get(h.signature);
     if (known) { if (!known.done) { known.prio = 0; known.nextTryAt = 0; known.hintAt ??= h.receivedAt; } }
@@ -370,7 +386,7 @@ export function createHistoryService(deps: HistoryDeps) {
   }
 
   function viewedCurves() {
-    return [...cache.values()].filter(viewed).sort((a, b) => b.lastUsed - a.lastUsed).map((e) => e.curve);
+    return [...cache.values()].filter((e) => viewed(e) && !e.poolError && (e.kind === "curve" || !!e.pool)).sort((a, b) => b.lastUsed - a.lastUsed).map((e) => e.curve);
   }
 
   function builderFor(e: Entry) {
@@ -386,7 +402,8 @@ export function createHistoryService(deps: HistoryDeps) {
   function history(m: Market | undefined, id: string, intervalSec: number, opts: { retry?: boolean } = {}) {
     const sup = checkSupport(m, id);
     if (!sup.ok) return { state: sup.state as HistoryState, error: sup.reason, candles: [] as Candle[], swaps: 0, lastSuccessAt: null, lastDataAt: null, completedAt: null, version: 0 };
-    const e = entry(m!);
+    if (!m) throw new Error("Supported history requires a market");
+    const e = entry(m);
     e.lastUsed = now();
     if (opts.retry && e.failure && !e.inflight) e.attemptedAt = 0;
     const want = wantsWork(e);
@@ -406,7 +423,8 @@ export function createHistoryService(deps: HistoryDeps) {
     // A past rate limit whose cooldown has ended isn't the current state: report coverage, keep the time.
     const staleLimit = e.failure?.kind === "rate_limited" && !cooling;
     if (staleLimit) error = null;
-    if (e.failure && !staleLimit) state = e.failure.kind;
+    if (e.poolError) { state = "unsupported"; error = e.poolError; }
+    else if (e.failure && !staleLimit) state = e.failure.kind;
     else if (blockedByCooldown && coverage !== "complete") { state = "rate_limited"; error = "Solana RPC is cooling down after a rate limit; will retry"; }
     else if (!e.lastRpcAt) state = "loading";
     else if (coverage === "complete") state = used ? "ok" : "empty";
@@ -414,6 +432,8 @@ export function createHistoryService(deps: HistoryDeps) {
     else state = "partial";
     const liveState = deps.live?.state(e.curve) ?? "off";
     return {
+      marketKind: e.kind, poolVerified: e.kind === "amm" ? !!e.pool : undefined,
+      source: e.kind === "amm" ? "solana-rpc:pumpswap-buy-sell-event" : "solana-rpc:pump-trade-event",
       state, coverage, refreshing: !!e.inflight, candles, swaps: used, version: e.version,
       lastRateLimitAt: e.failure?.kind === "rate_limited" ? e.failure.at : null, lastSuccessAt: e.lastRpcAt, lastDataAt: e.lastDataAt, completedAt: e.completedAt, error, failureAt: e.failure?.at ?? null, retryAt,
       scannedTransactions: e.scanned, pendingTransactions: pend,

@@ -86,7 +86,7 @@ test("busy curve: incremental scan paginates instead of skipping past a gap", as
 test("unsupported: migrated AMM pool, wrong PDA, unknown market", () => {
   const pool = market({ kind: "amm", venue: "pumpswap", id: marketId("solana", "amm", "Pool111"), address: "Pool111" });
   const r1 = checkSupport(pool, pool.id);
-  assert.equal(r1.ok, false); assert.match((r1 as any).reason, /AMM pools isn't implemented/);
+  assert.equal(r1.ok, false); assert.match((r1 as any).reason, /Invalid PumpSwap/);
   const wrong = Keypair.generate().publicKey.toBase58();
   const bad = market({ address: wrong, id: marketId("solana", "curve", wrong) });
   const r2 = checkSupport(bad, bad.id);
