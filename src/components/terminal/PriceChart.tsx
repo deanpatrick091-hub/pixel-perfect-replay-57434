@@ -79,7 +79,6 @@ export function PriceChart({ marketId, quoteCcy, tick, liveTrades }: { marketId:
           vertLine: { color: fg + "99", width: 1, style: lc.LineStyle.Dashed, labelBackgroundColor: surface },
           horzLine: { color: fg + "99", width: 1, style: lc.LineStyle.Dashed, labelBackgroundColor: surface },
         },
-        localization: { priceFormatter: (p: number) => fmtPriceSig(p, digits.current) },
       });
       const up = cssVar("--up"), down = cssVar("--down");
       // Close >= open is bullish (green), close < open bearish (red); body, border and wick all follow.
@@ -285,7 +284,7 @@ export function PriceChart({ marketId, quoteCcy, tick, liveTrades }: { marketId:
         <div ref={el} className="absolute inset-0" />
         {legend && <Legend t={legend.t} c={legend.c} tf={tf} quoteCcy={quoteCcy} sig={precision.sig} />}
         {gapMode === "compact" && expanded.gaps > 0 && (
-          <span className="num pointer-events-none absolute right-16 top-1.5 z-10 rounded bg-background/70 px-1 text-[10px] text-warn sm:hidden">gaps compressed</span>
+          <span className="num pointer-events-none absolute left-2 top-11 z-10 rounded bg-background/70 px-1 text-[10px] text-warn sm:hidden">gaps compressed</span>
         )}
         {chartError && <div role="alert" className="p-6 text-center text-xs text-muted-foreground">Chart failed to load. Refresh to try again.</div>}
         {emptyMsg && (
