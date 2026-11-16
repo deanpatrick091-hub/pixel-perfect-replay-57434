@@ -3,7 +3,7 @@ import { feed } from "@/lib/feed/client";
 import type { Candle, ChartHistory } from "@/lib/feed/types";
 import { useChartHistory } from "@/lib/feed/useChartHistory";
 import { BAR_SPACING, RIGHT_OFFSET, fitRange, initialRange } from "@/lib/chart/viewport";
-import { isCandle, priceDigits, rowTailFrom, seriesRows, type ChartRow, type GapMode } from "@/lib/chart/series";
+import { candleTone, isCandle, priceDigits, rowTailFrom, seriesRows, type ChartRow, type GapMode } from "@/lib/chart/series";
 import { INTERVALS } from "@/lib/market/candles";
 import { Button } from "@/components/ui/button";
 import { fmtPriceSig } from "@/lib/format";
@@ -140,10 +140,16 @@ export function PriceChart({ marketId, quoteCcy, tick, liveTrades }: { marketId:
   useEffect(() => {
     const a = api.current;
     if (!a) return;
-    const bar = (c: ChartRow) => isCandle(c) ? ({ time: c.t, open: c.o, high: c.h, low: c.l, close: c.c }) : ({ time: c.t });
+    const rows = expanded.rows;
+    const prevReal = new Map<number, Candle | null>();
+    { let last: Candle | null = null; for (const r of rows) if (isCandle(r)) { prevReal.set(r.t, last); last = r; } }
+    const bar = (c: ChartRow) => {
+      if (!isCandle(c)) return { time: c.t };
+      const col = candleTone(c, prevReal.get(c.t) ?? null) === "up" ? a.up : a.down;
+      return { time: c.t, open: c.o, high: c.h, low: c.l, close: c.c, color: col, borderColor: col, wickColor: col };
+    };
     const vol = (c: ChartRow, side: "buyVolume" | "sellVolume") => isCandle(c) && c[side] != null
       ? ({ time: c.t, value: (c[side] ?? 0) * (side === "sellVolume" ? -1 : 1) }) : ({ time: c.t });
-    const rows = expanded.rows;
     if (digits.current !== precision.sig || !shown.current) {
       digits.current = precision.sig;
       a.candles.applyOptions({ priceFormat: { type: "custom", formatter: (p: number) => fmtPriceSig(p, digits.current), minMove: precision.minMove } });

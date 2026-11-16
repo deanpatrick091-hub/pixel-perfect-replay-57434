@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { INTERVALS } from "@/lib/market/candles";
-import { chartRows, compactRows, isCandle, MAX_GAP_SLOTS, priceDigits, rowTailFrom } from "./series";
+import { candleTone, chartRows, compactRows, isCandle, MAX_GAP_SLOTS, priceDigits, rowTailFrom } from "./series";
 import { fmtPriceSig } from "@/lib/format";
 import { initialRange } from "./viewport";
 
@@ -72,5 +72,22 @@ describe("adaptive price precision", () => {
   it("formats subscript notation with the requested significant digits", () => {
     expect(fmtPriceSig(0.0000535561, 6)).toBe("0.0\u2084535561");
     expect(fmtPriceSig(0.012345, 4)).toBe("0.01235");
+  });
+});
+
+describe("candle direction (real Moonvale single-swap minutes, 16 Nov 17:28–17:43 UTC)", () => {
+  const one = (t: number, p: number, side: "buy" | "sell") => ({ t, o: p, h: p, l: p, c: p, v: 0.01, buys: side === "buy" ? 1 : 0, sells: side === "sell" ? 1 : 0 });
+  it("a single verified sell that lowered the price is bearish, not green", () => {
+    const buy = one(1_700_000_000, 3.590936743e-6, "buy"), sell = one(1_700_000_180, 3.556225092e-6, "sell");
+    expect(candleTone(buy, null)).toBe("up");
+    expect(candleTone(sell, buy)).toBe("down");
+  });
+  it("close vs open decides when they differ, regardless of trade counts", () => {
+    expect(candleTone({ ...bar(60, 0.5), buys: 5, sells: 0 }, null)).toBe("down");
+    expect(candleTone(bar(60, 2), null)).toBe("up");
+  });
+  it("mixed one-price bucket falls back to the move from the previous real close", () => {
+    const prev = one(0, 2, "buy"), mixed = { ...one(60, 1.5, "buy"), sells: 1 };
+    expect(candleTone(mixed, prev)).toBe("down");
   });
 });

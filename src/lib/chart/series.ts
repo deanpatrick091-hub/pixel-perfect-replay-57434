@@ -33,6 +33,20 @@ export function priceDigits(candles: Candle[]) {
   return { sig, minMove };
 }
 
+/**
+ * Bullish/bearish tone for a real candle. Close vs open decides whenever they differ. A one-price candle
+ * (typically a single swap) has no body, so "close >= open" would paint every sparse sell green: instead use
+ * the verified swap direction when the bucket is all-buy or all-sell (an AMM buy always raises price, a sell
+ * lowers it), else the move from the previous real candle's close. Colour only; no price is changed or invented.
+ */
+export function candleTone(c: Candle, prev: Candle | null): "up" | "down" {
+  if (c.c !== c.o) return c.c > c.o ? "up" : "down";
+  if (c.buys > 0 && c.sells === 0) return "up";
+  if (c.sells > 0 && c.buys === 0) return "down";
+  if (prev && c.c !== prev.c) return c.c > prev.c ? "up" : "down";
+  return "up";
+}
+
 export function chartRows(candles: Candle[], intervalSec: number) {
   const rows: ChartRow[] = [];
   let remaining = MAX_GAP_SLOTS, omitted = 0;
