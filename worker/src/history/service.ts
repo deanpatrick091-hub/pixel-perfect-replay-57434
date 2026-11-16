@@ -195,6 +195,7 @@ export function createHistoryService(deps: HistoryDeps) {
     if (!e.scan) e.scan = { until: e.newestSig, before: null, rows: [] };
     const scan = e.scan;
     for (let page = 0; page < SIG_PAGES_PER_REFRESH; page++) {
+      if (page > 0 && liveReady(e)) return; // a live hint arrived: decode it now; the scan cursor is kept
       const params: Record<string, unknown> = { limit: SIG_PAGE, commitment: "confirmed" };
       if (scan.until) params.until = scan.until;
       if (scan.before) params.before = scan.before;
@@ -253,6 +254,8 @@ export function createHistoryService(deps: HistoryDeps) {
     }
     return best;
   }
+
+  const liveReady = (e: Entry) => { const t = now(); for (const s of e.open) if (s.prio === 0 && !s.busy && s.nextTryAt <= t) return true; return false; };
 
   function retryLater(e: Entry, s: SigMeta, kind: "transport" | "null") {
     s.lastErr = kind;

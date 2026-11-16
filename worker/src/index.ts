@@ -4,7 +4,7 @@ import { PumpPortalAdapter } from "./adapters/pumpportal.ts";
 import { Store, marketId, type Market } from "./store.ts";
 import { startServer } from "./server.ts";
 import { startSolUsd, solUsd, solUsdFresh, solUsdStats } from "./solusd.ts";
-import { pairAt, tokenPairs, dexStats } from "./dexscreener.ts";
+import { pairsAt, tokenPairs, dexStats } from "./dexscreener.ts";
 import { push, ingestStats } from "./ingest.ts";
 import { historyStats } from "./history/index.ts";
 import { restoreMarkets } from "./restore.ts";
@@ -144,10 +144,15 @@ setInterval(() => {
 }, 10_000).unref();
 
 // AMM pools: refresh reserves/liquidity from DEX Screener (shared cache).
+let ammRefreshing = false;
 setInterval(async () => {
+  if (ammRefreshing) return; // never overlap refresh rounds
+  ammRefreshing = true;
+  try {
   const amms = [...store.markets.values()].filter((m) => m.kind === "amm" && m.status === "active").slice(0, 60);
+  const got = await pairsAt(amms.map((m) => m.address)); // ≤30 pools per request
   for (const m of amms) {
-    const r = await pairAt(m.address);
+    const r = got.get(m.address);
     const p = r?.pair;
     if (!r || !p || p.baseToken?.address !== m.mint) continue;
     // A cached/stale DEX Screener body keeps its real fetch time; don't re-stamp it as fresh.
@@ -162,6 +167,7 @@ setInterval(async () => {
     m.stateSource = "dexscreener";
     store.markDirty(m.id);
   }
+  } finally { ammRefreshing = false; }
 }, 15_000).unref();
 
 setInterval(() => push(store), 1000).unref();

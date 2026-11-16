@@ -76,6 +76,16 @@ This data is never used for quotes or paper execution.
 - `SOLANA_RPC_URL` (optional) — defaults to the free public `https://api.mainnet-beta.solana.com`.
 - `SOLANA_RPC_MAX_RPS` (optional, default 2) · `SOLANA_RPC_TIMEOUT_MS` (default 15000).
 - `SOLANA_WS_URL` (optional, default derived from `SOLANA_RPC_URL`: `wss://api.mainnet-beta.solana.com`) · `SOLANA_WS_ENABLED` (default true) · `SOLANA_WS_MAX_SUBS` (default 5).
+- **Optional own free RPC key (e.g. a Helius free plan).** Nothing in the code needs an account. If you create one yourself, set
+  these only in the worker host's environment (never in the site or the repo):
+  `SOLANA_RPC_URL=https://mainnet.helius-rpc.com/?api-key=<your key>`, `SOLANA_WS_URL=wss://mainnet.helius-rpc.com/?api-key=<your key>`,
+  and a budget below the plan's limits, e.g. `SOLANA_RPC_MAX_RPS=2`. Only standard methods are used (`getSignaturesForAddress`,
+  `getTransaction`, `getAccountInfo`, `logsSubscribe`) — no enhanced/paid APIs. Monthly credits are the real cap: 1,000,000 per
+  month averages ~0.39 requests/second if each call costs 1 credit (check the provider's current credit table), so a
+  sustained budget above that will run out mid-month. `/status` masks `api-key=`/`token=` values in URLs.
+- DEX Screener (server-side only): one shared client, ≤200 req/min token bucket (burst 8), ≤3 concurrent, identical
+  requests shared, pools batched 30 per request, and any HTTP 429 pauses all DEX Screener calls (Retry-After honoured,
+  else 30 s doubling to 5 min). Cached prices keep their real fetch time. Counters are in `/status` → `dexscreener`.
 Endpoint: `GET /api/history?market=<id>&tf=<1s|5s|15s|1m|5m|15m|1h|4h|1D>[&retry=1]`. `/status` → `chartHistory.rpc`, `chartHistory.liveLogs`. Tests: `cd worker && npm test`.
 
 ## Restart recovery and deployment checks

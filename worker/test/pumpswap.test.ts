@@ -152,3 +152,18 @@ test("live log-decoded swap charts at once and is replaced (not double counted) 
   h = svc.history(m, m.id, 60);
   assert.equal(h.swaps, 2); assert.equal(h.provisionalSwaps, 0); assert.equal(h.live.logConfirmed, 1); assert.equal(h.live.logMismatch, 0);
 });
+
+test("a live hint arriving during a long backlog decode is fetched next, not after the whole batch", async () => {
+  const order: string[] = []; let hinted = false; let svcRef: any;
+  const sigs = Array.from({ length: 20 }, (_, i) => ({ signature: `B${i}`, slot: 100 - i, err: null, blockTime: 1_700_000_000 }));
+  const svc = createHistoryService({ now: () => 1, later: () => {}, coolingDown: () => false, rpc: async <T,>(method: string, params: unknown[]): Promise<T> => {
+    if (method === "getAccountInfo") return { value: account } as T;
+    if (method === "getSignaturesForAddress") return sigs.slice(0, 20) as T;
+    order.push(String(params[0]));
+    if (order.length === 3 && !hinted) { hinted = true; svcRef.hint({ curve: pool.address, signature: "LIVE", slot: 200, receivedAt: 1 }); }
+    return swapTx(true) as T;
+  } });
+  svcRef = svc;
+  svc.history(m, m.id, 60); await svc._inflight(m.id);
+  assert.equal(order[3], "LIVE", `live hint fetched 4th, got order ${order.slice(0, 6)}`);
+});
