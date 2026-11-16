@@ -45,11 +45,14 @@ export type HistoryState = "ok" | "partial" | "empty" | "loading" | "rate_limite
 /** One coherent snapshot of polled, read-only on-chain history (never used for quotes or orders). */
 export interface ChartHistory {
   market: string; tf: string; source: string; marketKind?: "curve" | "amm"; poolVerified?: boolean; delivery?: "polled" | "live+polled"; state: HistoryState; refreshing?: boolean; candles: Candle[]; swaps: number;
+  /** Swaps decoded from the live notification's PumpSwap logs, awaiting their transaction check. */
+  provisionalSwaps?: number;
   version?: number; lastRateLimitAt?: number | null;
   backfill?: { state: "waiting" | "in_progress" | "done_start" | "done_limit" | "done_age"; listedSignatures: number; oldestListedTs: number | null; maxSignatures: number; maxAgeSec: number };
   /** Free Solana logsSubscribe hints for this viewed curve; swaps are still fetched and validated before charting. */
   live?: { state: "streaming" | "subscribing" | "reconnecting" | "unavailable" | "off"; hints: number; swaps: number; lastHintAt: number | null;
-    hintToChartMs: number | null; chainToChartMs: number | null; hintToChartMedianMs?: number | null; reconnects: number; failedExcluded: number; error: string | null };
+    hintToChartMs: number | null; chainToChartMs: number | null; hintToChartMedianMs?: number | null; chainToChartMedianMs?: number | null;
+    logSwaps?: number; logConfirmed?: number; logMismatch?: number; logFallback?: number; reconnects: number; failedExcluded: number; error: string | null };
   lastSuccessAt: number | null; completedAt: number | null; error: string | null; failureAt?: number | null;
   /** lastSuccessAt = last successful RPC contact; lastDataAt = last time new swaps were added to the candles. */
   lastDataAt?: number | null; retryAt?: number | null; coverage?: "in_progress" | "complete" | "incomplete";

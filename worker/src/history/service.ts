@@ -5,6 +5,7 @@ import { bondingCurvePda, extractSwaps, type VerifiedSwap } from "./pumpEvents.t
 import { PublicKey } from "@solana/web3.js";
 import { PoolInvalid, verifyPoolAccount, extractPumpSwapSwaps, type VerifiedPool } from "./pumpSwapEvents.ts";
 import { marketId, type Market } from "../store.ts";
+import { extractPumpSwapLogSwaps } from "./logEvents.ts";
 
 // Read-only chart history for viewed Pump.fun curves, from public Solana RPC.
 // Kept entirely separate from the Store: it never touches executable state, quotes or paper orders.
@@ -43,7 +44,7 @@ interface SigMeta {
   signature: string; slot: number; rank: number; txIndex: number | null; prio: Priority;
   tries: number; nextTryAt: number; lastErr: "transport" | "null" | null; done: boolean; busy: boolean; hintAt: number | null;
 }
-interface RankedSwap extends VerifiedSwap { rank: number; txIndex: number | null }
+interface RankedSwap extends VerifiedSwap { rank: number; txIndex: number | null; provisional?: boolean }
 interface SigRow { signature: string; slot: number; err: unknown; blockTime: number | null; transactionIndex?: number | null }
 
 interface Entry {
@@ -57,7 +58,9 @@ interface Entry {
   lastRpcAt: number | null; lastDataAt: number | null; scanDoneAt: number | null; completedAt: number | null; attemptedAt: number;
   failure: { kind: "rate_limited" | "unavailable"; message: string; at: number } | null;
   lastTxError: { message: string; at: number } | null;
-  live: { hints: number; swaps: number; lastHintAt: number | null; hintToChartMs: number | null; chainToChartMs: number | null; samples: number[] };
+  live: { hints: number; swaps: number; lastHintAt: number | null; hintToChartMs: number | null; chainToChartMs: number | null; samples: number[];
+    logSwaps: number; logConfirmed: number; logMismatch: number; logFallback: number; chainSamples: number[] };
+  verified: number;
   inflight: Promise<void> | null; again: boolean; lastUsed: number; version: number; built: { version: number; builder: CandleBuilder } | null;
 }
 
@@ -128,7 +131,7 @@ export function createHistoryService(deps: HistoryDeps) {
         back: { state: "waiting", before: null, listed: 0, floorTs: null, oldestTs: null },
         highRank: 0, lowRank: 0, scanned: 0, nonSwapTx: 0, failedTx: 0, rejectedEvents: 0, missingTx: 0, transportFailedTx: 0, droppedTx: 0, scanGaps: 0,
         trimmedSwaps: 0, trimmedBeforeTs: null, lastRpcAt: null, lastDataAt: null, scanDoneAt: null, completedAt: null, attemptedAt: 0,
-        failure: null, lastTxError: null, live: { hints: 0, swaps: 0, lastHintAt: null, hintToChartMs: null, chainToChartMs: null, samples: [] },
+        failure: null, lastTxError: null, live: { hints: 0, swaps: 0, lastHintAt: null, hintToChartMs: null, chainToChartMs: null, samples: [], logSwaps: 0, logConfirmed: 0, logMismatch: 0, logFallback: 0, chainSamples: [] }, verified: 0,
         inflight: null, again: false, lastUsed: now(), version: 0, built: null };
       cache.set(m.id, e); byCurve.set(m.address, e);
       if (cache.size > MAX_ENTRIES) {
@@ -284,15 +287,24 @@ export function createHistoryService(deps: HistoryDeps) {
       e.rejectedEvents += r.rejectedEvents;
       if (r.reason === "failed_tx") e.failedTx++;
       else if (!r.swaps.length) e.nonSwapTx++;
+      // Verified events replace any provisional log-decoded swaps of this transaction.
+      const prov = [...e.swaps.values()].filter((w) => w.provisional && w.signature === s.signature);
+      if (prov.length) {
+        for (const w of prov) e.swaps.delete(w.id);
+        const same = prov.length === r.swaps.length && prov.every((w, k) => w.side === r.swaps[k].side && w.baseQty === r.swaps[k].baseQty && w.quoteQty === r.swaps[k].quoteQty);
+        if (same) e.live.logConfirmed++; else { e.live.logMismatch++; log("warn", "log-decoded swap differed from verified transaction", { market: e.marketId, sig: s.signature }); }
+        e.version++;
+        if (!r.swaps.length) deps.onChange?.(e.marketId);
+      }
       let added = 0;
       for (const w of r.swaps) {
         if (e.swaps.has(w.id)) continue;
         e.swaps.set(w.id, { ...w, rank: s.rank, txIndex: s.txIndex });
-        added++;
+        added++; e.verified++;
       }
       if (added) {
         e.version++; e.lastDataAt = now(); stats.swapsDecoded += added;
-        if (s.hintAt != null) {
+        if (s.hintAt != null && !prov.length) {
           e.live.swaps += added; stats.liveSwaps += added;
           e.live.hintToChartMs = now() - s.hintAt;
           e.live.chainToChartMs = now() - r.swaps[0].blockTime * 1000;
@@ -375,7 +387,7 @@ export function createHistoryService(deps: HistoryDeps) {
   }
 
   /** A confirmed, non-failed transaction mentioned a viewed curve: fetch and validate it before anything else. */
-  function hint(h: { curve: string; signature: string; slot: number; receivedAt: number }) {
+  function hint(h: { curve: string; signature: string; slot: number; receivedAt: number; logs?: string[] }) {
     const e = byCurve.get(h.curve);
     if (!e || !viewed(e) || e.poolError || (e.kind === "amm" && !e.pool)) return;
     stats.liveHints++; e.live.hints++; e.live.lastHintAt = h.receivedAt;
@@ -383,7 +395,28 @@ export function createHistoryService(deps: HistoryDeps) {
     if (known) { if (!known.done) { known.prio = 0; known.nextTryAt = 0; known.hintAt ??= h.receivedAt; } }
     else if (e.open.size < MAX_PENDING) addSig(e, { signature: h.signature, slot: h.slot }, ++e.highRank, 0, h.receivedAt);
     else return; // backlog full: the next signature scan lists it (or discloses a gap)
+    chartFromLogs(e, h);
     kick(e);
+  }
+
+  /** Provisional swaps decoded from the notification's own logs (see logEvents.ts); still confirmed by getTransaction.
+   * Only after this pool has at least one transaction-verified swap (which also proved the 6/9 vault decimals). */
+  function chartFromLogs(e: Entry, h: { signature: string; slot: number; receivedAt: number; logs?: string[] }) {
+    if (e.kind !== "amm" || !e.pool || !h.logs || e.verified === 0) return;
+    const s = e.sigs.get(h.signature);
+    if (!s || s.done || [...e.swaps.values()].some((w) => w.signature === h.signature)) return;
+    const got = extractPumpSwapLogSwaps(h.logs, null, h.signature, h.slot, e.pool);
+    if (got == null) { e.live.logFallback++; return; }
+    if (!got.length) return;
+    for (const w of got) e.swaps.set(w.id, { ...w, rank: s.rank, txIndex: null, provisional: true });
+    e.version++; e.lastDataAt = now();
+    e.live.logSwaps += got.length; e.live.swaps += got.length; stats.liveSwaps += got.length;
+    e.live.hintToChartMs = now() - h.receivedAt;
+    e.live.chainToChartMs = now() - got[0].blockTime * 1000;
+    e.live.samples.push(e.live.hintToChartMs); if (e.live.samples.length > 50) e.live.samples.shift();
+    e.live.chainSamples.push(e.live.chainToChartMs); if (e.live.chainSamples.length > 50) e.live.chainSamples.shift();
+    trimSwaps(e);
+    deps.onChange?.(e.marketId);
   }
 
   /** Live stream reconnected: events during the outage are caught up by an immediate signature scan. */
@@ -441,6 +474,7 @@ export function createHistoryService(deps: HistoryDeps) {
       marketKind: e.kind, poolVerified: e.kind === "amm" ? !!e.pool : undefined,
       source: e.kind === "amm" ? "solana-rpc:pumpswap-buy-sell-event" : "solana-rpc:pump-trade-event",
       state, coverage, refreshing: !!e.inflight, candles, swaps: used, version: e.version,
+      provisionalSwaps: [...e.swaps.values()].filter((w) => w.provisional).length,
       lastRateLimitAt: e.failure?.kind === "rate_limited" ? e.failure.at : null, lastSuccessAt: e.lastRpcAt, lastDataAt: e.lastDataAt, completedAt: e.completedAt, error, failureAt: e.failure?.at ?? null, retryAt,
       scannedTransactions: e.scanned, pendingTransactions: pend,
       missingTransactions: e.missingTx, transportFailedTransactions: e.transportFailedTx, droppedTransactions: e.droppedTx,
@@ -453,6 +487,8 @@ export function createHistoryService(deps: HistoryDeps) {
         state: liveState, hints: e.live.hints, swaps: e.live.swaps, lastHintAt: e.live.lastHintAt,
         hintToChartMs: e.live.hintToChartMs, chainToChartMs: e.live.chainToChartMs,
         hintToChartMedianMs: e.live.samples.length ? [...e.live.samples].sort((a, b) => a - b)[Math.floor(e.live.samples.length / 2)] : null,
+        chainToChartMedianMs: e.live.chainSamples.length ? [...e.live.chainSamples].sort((a, b) => a - b)[Math.floor(e.live.chainSamples.length / 2)] : null,
+        logSwaps: e.live.logSwaps, logConfirmed: e.live.logConfirmed, logMismatch: e.live.logMismatch, logFallback: e.live.logFallback,
         reconnects: deps.live?.stats.reconnects ?? 0, failedExcluded: deps.live?.stats.failedExcluded ?? 0, error: liveState === "streaming" ? null : deps.live?.stats.lastError ?? null,
       },
     };

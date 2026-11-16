@@ -130,3 +130,25 @@ test("unverified PumpSwap pool never scans or subscribes; transport failure rema
   invalid.history(wrong, wrong.id, 60); await invalid._inflight(wrong.id);
   assert.equal(invalid.history(wrong, wrong.id, 60).state, "unsupported"); assert.deepEqual(invalid.viewedCurves(), []);
 });
+test("live log-decoded swap charts at once and is replaced (not double counted) by its verified transaction", async () => {
+  let t = 1_000_000, txReady = false;
+  const svc = createHistoryService({ now: () => t, later: () => {}, coolingDown: () => false, rpc: async <T,>(method: string, params: unknown[]): Promise<T> => {
+    if (method === "getAccountInfo") return { value: account } as T;
+    if (method === "getSignaturesForAddress") return [{ signature: "A", slot: 1, err: null, blockTime: 1_700_000_000 }] as T;
+    if (params[0] === "L") return (txReady ? swapTx(false, 1_700_000_070, 1_000_000_000n) : null) as T;
+    return swapTx(true) as T;
+  } });
+  svc.history(m, m.id, 60); await svc._inflight(m.id);
+  const ev = Buffer.alloc(394);
+  Buffer.from([62, 47, 55, 10, 165, 3, 220, 42]).copy(ev); ev.writeBigInt64LE(1_700_000_070n, 8);
+  ev.writeBigUInt64LE(1_000_000n, 16); ev.writeBigUInt64LE(1_000_000_000n, 64); Buffer.from(bs58.decode(pool.address)).copy(ev, 120);
+  const logs = [`Program ${PUMPSWAP_PROGRAM} invoke [1]`, "Program data: " + ev.toString("base64"), `Program ${PUMPSWAP_PROGRAM} success`];
+  svc.hint({ curve: pool.address, signature: "L", slot: 2, receivedAt: t, logs });
+  let h = svc.history(m, m.id, 60);
+  assert.equal(h.swaps, 2); assert.equal(h.provisionalSwaps, 1); assert.equal(h.candles.at(-1)!.c, 1); assert.equal(h.candles.at(-1)!.sells, 1);
+  await svc._inflight(m.id);                 // tx not served yet: provisional stays, retried
+  assert.equal(svc.history(m, m.id, 60).provisionalSwaps, 1);
+  txReady = true; t += 6000; svc.hint({ curve: pool.address, signature: "L", slot: 2, receivedAt: t, logs }); await svc._inflight(m.id);
+  h = svc.history(m, m.id, 60);
+  assert.equal(h.swaps, 2); assert.equal(h.provisionalSwaps, 0); assert.equal(h.live.logConfirmed, 1); assert.equal(h.live.logMismatch, 0);
+});

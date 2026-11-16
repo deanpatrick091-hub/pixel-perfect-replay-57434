@@ -2,7 +2,7 @@ import WebSocket from "ws";
 import { log } from "../log.ts";
 
 // Solana logsSubscribe notifications are hints: swaps are validated through getTransaction before charting.
-export interface LiveHint { curve: string; signature: string; slot: number; receivedAt: number }
+export interface LiveHint { curve: string; signature: string; slot: number; receivedAt: number; logs?: string[] }
 type Sock = { readyState: number; send(d: string): void; close(): void; terminate?(): void; on(ev: string, fn: (...a: any[]) => void): void };
 export interface LiveOptions {
   url: string; maxSubs: number; onHint: (h: LiveHint) => void; onReconnect?: (curves: string[]) => void;
@@ -107,7 +107,7 @@ export function createLiveLogs(o: LiveOptions) {
       stats.notifications++;
       if (v.err != null) { stats.failedExcluded++; return; }
       stats.lastNotificationAt = now();
-      o.onHint({ curve, signature: v.signature, slot: Number(m.params.result.context?.slot) || 0, receivedAt: now() });
+      o.onHint({ curve, signature: v.signature, slot: Number(m.params.result.context?.slot) || 0, receivedAt: now(), logs: Array.isArray(v.logs) ? v.logs : undefined });
     });
     const down = (why: string) => {
       if (ws !== sock) return;

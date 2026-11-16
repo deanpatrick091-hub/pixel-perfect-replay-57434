@@ -5,7 +5,7 @@ export type HistoryFetcher = (marketId: string, tf: string, signal: AbortSignal,
 export type NudgeSubscribe = (marketId: string, onNudge: () => void) => () => void;
 export const POLL_IDLE_MS = 15_000;
 export const POLL_BUSY_MS = 4_000;
-export const MIN_GAP_MS = 700;          // nudges are coalesced to at most one fetch per this interval
+export const MIN_GAP_MS = 300;          // nudges are coalesced to at most one fetch per this interval (polling stays 4s/15s)
 export const STUCK_MS = 20_000;         // an in-flight request older than this is aborted and retried
 export const WATCHDOG_MS = 5_000;
 const ERR_BACKOFF = [3_000, 6_000, 12_000, 30_000];
