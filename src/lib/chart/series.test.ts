@@ -86,6 +86,15 @@ describe("candle direction (real Moonvale single-swap minutes, 16 Nov 17:28–17
     expect(candleTone({ ...bar(60, 0.5), buys: 5, sells: 0 }, null)).toBe("down");
     expect(candleTone(bar(60, 2), null)).toBe("up");
   });
+  it("a flat doji below the previous close is red even if its only loaded trade was a buy (and vice versa)", () => {
+    const prev = one(0, 3.59e-6, "sell");
+    expect(candleTone(one(60, 3.55e-6, "buy"), prev)).toBe("down");
+    expect(candleTone(one(60, 3.62e-6, "sell"), prev)).toBe("up");
+  });
+  it("verified side is only the fallback with no previous close or an equal price", () => {
+    expect(candleTone(one(60, 2, "sell"), null)).toBe("down");
+    expect(candleTone(one(60, 2, "sell"), one(0, 2, "buy"))).toBe("down");
+  });
   it("mixed one-price bucket falls back to the move from the previous real close", () => {
     const prev = one(0, 2, "buy"), mixed = { ...one(60, 1.5, "buy"), sells: 1 };
     expect(candleTone(mixed, prev)).toBe("down");

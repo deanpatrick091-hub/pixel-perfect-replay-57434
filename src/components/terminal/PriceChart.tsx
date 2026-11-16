@@ -96,6 +96,7 @@ export function PriceChart({ marketId, quoteCcy, tick, liveTrades }: { marketId:
       chart.panes()[1]?.setStretchFactor(1);
       chart.subscribeCrosshairMove((p: any) => setHover(typeof p?.time === "number" ? p.time : null));
       api.current = { chart, candles, buyVolume, sellVolume, up, down };
+      if (import.meta.env.DEV) (el.current as any).__chart = { chart, candles };
       setReady(true);
     }).catch(() => { if (!disposed) setChartError(true); });
     return () => { disposed = true; api.current?.chart.remove(); api.current = null; };
@@ -180,6 +181,7 @@ export function PriceChart({ marketId, quoteCcy, tick, liveTrades }: { marketId:
 
   // ---- status (outside the canvas) ----
   const streaming = h?.live?.state === "streaming";
+  const complete = h?.coverage === "complete";
   const status = ((): { tone: Tone; text: string; retry?: boolean } => {
     if (hist.latest) return { tone: "warn", text: `${hist.latest.error ?? `Latest attempt: ${hist.latest.state}`} · retaining ${h?.swaps ?? 0} verified swaps`, retry: true };
     if (useLive) return { tone: "live", text: `Swaps streamed by PumpPortal · ${list.reduce((n, c) => n + c.buys + c.sells, 0)} swaps` };
@@ -194,17 +196,19 @@ export function PriceChart({ marketId, quoteCcy, tick, liveTrades }: { marketId:
     }
     if (h.state === "unavailable") return { tone: "bad", text: `On-chain history request failed · retrying · ${head}`, retry: true };
     if (h.state === "loading") return { tone: "ok", text: "Loading recent swaps from Solana…" };
-    const mode = streaming ? "Live" : h.live?.state === "reconnecting" || h.live?.state === "subscribing" ? "Connecting live · polling" : "Polling";
+    // Connection state and history coverage are separate facts: a connected live feed doesn't make loaded history complete.
+    const mode = streaming ? "Live feed connected" : h.live?.state === "reconnecting" || h.live?.state === "subscribing" ? "Connecting live feed · polling" : "Polling (no live feed)";
+    const cov = h.coverage === "complete" ? "history complete" : "history partial";
     const scanning = h.state === "partial" && (h.pendingTransactions ?? 0) > 0
       ? ` · loading ${h.backfill?.state === "in_progress" ? "older history" : "swaps"} (${h.pendingTransactions} left)` : h.state === "partial" ? " · incomplete coverage" : "";
     const gaps = [h.rejectedEvents ? `${h.rejectedEvents} rejected` : "", h.missingTransactions ? `${h.missingTransactions} missing` : "", h.transportFailedTransactions ? `${h.transportFailedTransactions} failed` : ""].filter(Boolean).join(" · ");
-    return { tone: streaming ? "live" : h.state === "partial" && !(h.pendingTransactions ?? 0) ? "warn" : "ok", text: `${mode} · ${head}${scanning}${h.refreshing ? " · refreshing" : ""}${gaps ? ` · ${gaps}` : ""}` };
+    return { tone: streaming && h.coverage === "complete" ? "live" : h.state === "partial" && !(h.pendingTransactions ?? 0) ? "warn" : "ok", text: `${mode} · ${cov} · ${head}${scanning}${h.refreshing ? " · refreshing" : ""}${gaps ? ` · ${gaps}` : ""}` };
   })();
 
   const diag = ((): string[] => {
     if (!h || historyOff) return h?.error ? [h.error] : [];
     const out: string[] = [];
-    if (gapMode === "compact" && expanded.gaps) out.push(`Compact view: ${expanded.gaps} quiet ${tf} intervals with no verified swaps are compressed so traded candles sit side by side. Each candle keeps its real timestamp and OHLC; nothing is joined or filled. Switch "Gaps" to "Time" for real time spacing.`);
+    if (gapMode === "compact" && expanded.gaps) out.push(`Compact view: ${expanded.gaps} ${tf} intervals ${complete ? "with no swaps (quiet)" : "with no loaded swaps (history incomplete, so swaps may exist there)"} are compressed so traded candles sit side by side. Each candle keeps its real timestamp and OHLC; nothing is joined or filled. Switch "Gaps" to "Time" for real time spacing.`);
     if (expanded.omitted) out.push(`Time spacing: ${expanded.omitted} older empty interval slots omitted at the 6,000-slot display cap; all verified candles are retained. Blank intervals contain no OHLC or volume; incomplete coverage can also leave blanks.`);
     out.push(`Source: ${h.marketKind === "amm" ? `PumpSwap Buy/Sell events (${h.poolVerified ? "exact on-chain pool and mint verified" : "pool and mint verification pending"}; gross SOL swap notional, excluding separately reported fees)` : "Pump.fun TradeEvents"} decoded from confirmed transactions via free public Solana RPC (read-only; never used for prices or paper orders).`);
     out.push(streaming
@@ -261,7 +265,7 @@ export function PriceChart({ marketId, quoteCcy, tick, liveTrades }: { marketId:
         </div>
         <div className="flex shrink-0 items-center gap-0.5 border-l border-border pl-1">
           <Button variant="ghost" size="xs" onClick={() => setGapMode((m) => (m === "compact" ? "time" : "compact"))} className="text-[11px] text-muted-foreground"
-            aria-label={gapMode === "compact" ? "Quiet intervals compressed; switch to real time spacing" : "Real time spacing; switch to compact traded intervals"}>
+            aria-label={gapMode === "compact" ? "Intervals without loaded swaps compressed; switch to real time spacing" : "Real time spacing; switch to compact traded intervals"}>
             {gapMode === "compact" ? "Gaps: Compact" : "Gaps: Time"}
           </Button>
           <Button variant="ghost" size="xs" onClick={fit} className="text-[11px] text-muted-foreground" aria-label="Fit candles">Fit</Button>
@@ -279,7 +283,7 @@ export function PriceChart({ marketId, quoteCcy, tick, liveTrades }: { marketId:
       <div className="num hidden flex-wrap gap-x-3 border-b border-border px-2 py-1 text-[11px] sm:flex" aria-label="Verified swap volume">
         <span className="text-muted-foreground">Volume · available history</span>
         {pressure ? <><span className="text-up">Buy {pressure.buy.toFixed(3)} {quoteCcy}</span><span className="text-down">Sell {pressure.sell.toFixed(3)} {quoteCcy}</span><span className="text-muted-foreground">Buy {((pressure.buy / (pressure.buy + pressure.sell)) * 100).toFixed(1)}%</span></> : <span className="text-muted-foreground">Buy/sell volume unavailable</span>}
-        {gapMode === "compact" && expanded.gaps > 0 && <span className="text-warn">{expanded.gaps} quiet intervals compressed</span>}
+        {gapMode === "compact" && expanded.gaps > 0 && <span className="text-warn">{expanded.gaps} {complete ? "quiet" : "no-loaded-swap"} intervals compressed</span>}
         {expanded.omitted > 0 && <span className="text-warn">Older time gaps compressed</span>}
       </div>
       {details && diag.length > 0 && (
