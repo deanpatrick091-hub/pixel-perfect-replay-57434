@@ -3,8 +3,8 @@ import { log } from "./log.ts";
 import { PumpPortalAdapter } from "./adapters/pumpportal.ts";
 import { Store, marketId, type Market } from "./store.ts";
 import { startServer } from "./server.ts";
-import { startSolUsd, solUsd, solUsdFresh } from "./solusd.ts";
-import { pair, tokenPairs, dexStats } from "./dexscreener.ts";
+import { startSolUsd, solUsd, solUsdFresh, solUsdStats } from "./solusd.ts";
+import { pairAt, tokenPairs, dexStats } from "./dexscreener.ts";
 import { push, ingestStats } from "./ingest.ts";
 import { historyStats } from "./history/index.ts";
 import { restoreMarkets } from "./restore.ts";
@@ -40,7 +40,7 @@ function coverage() {
     ? `live for up to ${config.maxTradeSubs} subscribed mints (metered)`
     : "unavailable — requires PUMPPORTAL_API_KEY and explicit ENABLE_TRADE_SUBSCRIPTIONS=true (metered)";
   return {
-    "solana/pumpfun/bonding-curve": { launches: upstreamConnected ? "live" : "reconnecting", migrations: upstreamConnected ? "live" : "reconnecting", trades, quoteModel: "pump_curve_v1 (constant product on virtual reserves)", chartHistory: "candles (all timeframes) from validated Pump TradeEvents via free Solana RPC for viewed curves: live logsSubscribe hints + polled catch-up, bounded backfill (~60 min / 1000 signatures); read-only, not used for execution", paperExecution: tradeSubsEnabled() ? "enabled on subscribed curves with fresh state" : "disabled (no live trade source)" },
+    "solana/pumpfun/bonding-curve": { launches: upstreamConnected ? "live" : "reconnecting", migrations: upstreamConnected ? "live" : "reconnecting", trades, quoteModel: "pump_curve_v1 (constant product on virtual reserves)", chartHistory: "candles (all timeframes) from validated Pump TradeEvents via free Solana RPC for viewed curves: live logsSubscribe hints + polled catch-up, bounded backfill (up to 48 h / 2000 signatures); read-only, not used for execution", paperExecution: tradeSubsEnabled() ? "enabled on subscribed curves with fresh state" : "disabled (no live trade source)" },
     "solana/pumpswap/amm": { destinationPools: "resolved via DEX Screener after verified migration event", trades: tradeSubsEnabled() ? "unverified until first swap observed per pool" : "unavailable", quoteModel: "cpmm_reserves from DEX Screener liquidity (refreshed ~15s)" },
     "solana/raydium,meteora,other": { trades: "not covered yet", paperExecution: "disabled" },
   };
@@ -51,7 +51,7 @@ function status() {
     workerId: config.workerId, uptimeSec: Math.round((Date.now() - startedAt) / 1000), seq: store.seq,
     feed: { upstream: upstreamConnected ? "connected" : "reconnecting", ...pump.stats() },
     trackedMarkets: store.markets.size, duplicateSwaps: store.dupes, viewers: server.clientCount(),
-    solUsd: { price: solUsd.price, source: solUsd.source, updatedAt: solUsd.updatedAt, fresh: solUsdFresh() },
+    solUsd: { price: solUsd.price, source: solUsd.source, updatedAt: solUsd.updatedAt, fresh: solUsdFresh(), ...solUsdStats },
     dexscreener: dexStats, chartHistory: { ...historyStats(), rpcUrl: config.solanaRpcUrl.replace(/([?&](api[-_]?key|token)=)[^&]+/i, "$1***") }, ingest: { ...ingestStats, configured: !!(config.ingestUrl && config.ingestSecret) },
     coverage: coverage(),
   };
@@ -147,9 +147,12 @@ setInterval(() => {
 setInterval(async () => {
   const amms = [...store.markets.values()].filter((m) => m.kind === "amm" && m.status === "active").slice(0, 60);
   for (const m of amms) {
-    const p = await pair(m.address);
-    if (!p || p.baseToken?.address !== m.mint) continue;
-    const now = Date.now();
+    const r = await pairAt(m.address);
+    const p = r?.pair;
+    if (!r || !p || p.baseToken?.address !== m.mint) continue;
+    // A cached/stale DEX Screener body keeps its real fetch time; don't re-stamp it as fresh.
+    if (m.stateSource === "dexscreener" && m.stateUpdatedAt != null && r.at <= m.stateUpdatedAt) continue;
+    const now = r.at;
     m.reserveQuote = p.liquidity?.quote ?? m.reserveQuote;
     m.reserveBase = p.liquidity?.base ?? m.reserveBase;
     m.priceQuote = Number(p.priceNative) || m.priceQuote;

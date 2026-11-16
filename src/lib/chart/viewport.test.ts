@@ -1,11 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { BAR_SPACING, MIN_BARS, RIGHT_OFFSET, fitRange, initialRange, tailUpdateFrom } from "./viewport";
+import { BAR_SPACING, MIN_BARS, RIGHT_OFFSET, fitRange, initialRange, preservedRange, tailUpdateFrom } from "./viewport";
 
 const c = (t: number, close = 1, v = 1) => ({ t, o: 1, h: Math.max(1, close), l: Math.min(1, close), c: close, v, buys: 1, sells: 0 });
 
 describe("chart viewport", () => {
   it("two sparse candles stay narrow and right-aligned on desktop and mobile", () => {
-    for (const width of [1100, 360]) {
+    for (const width of [1100, 320, 280]) {
       const r = initialRange(2, width);
       const slots = r.to - r.from;
       expect(slots).toBeGreaterThanOrEqual(MIN_BARS);
@@ -27,5 +27,18 @@ describe("chart viewport", () => {
     expect(tailUpdateFrom(prev, [c(60), c(120), c(180)])).toBe(-1);
     expect(tailUpdateFrom(prev, [c(120, 5), c(180)])).toBe(-1);
     expect(tailUpdateFrom([], [c(60)])).toBe(-1);
+  });
+  });
+  it("a ~320px phone plot gets 6–8px bars, not the old 3.5px", () => {
+    const r = initialRange(400, 320);
+    const px = 320 / (r.to - r.from);
+    expect(px).toBeGreaterThanOrEqual(6);
+    expect(px).toBeLessThanOrEqual(8);
+  });
+  it("backfill prepending older rows keeps the same candles in view at the same spacing", () => {
+    const prev = [{ t: 300 }, { t: 360 }, { t: 420 }];
+    const next = [{ t: 60 }, { t: 120 }, { t: 300 }, { t: 360 }, { t: 420 }];
+    expect(preservedRange(prev, next, { from: 0.5, to: 2.5 })).toEqual({ from: 2.5, to: 4.5 });
+    expect(preservedRange(prev, [{ t: 360 }, { t: 420 }], { from: 0, to: 2 })).toBeNull();
   });
 });

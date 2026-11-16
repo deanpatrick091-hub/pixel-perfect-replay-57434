@@ -7,24 +7,26 @@ let tokens = 250;
 setInterval(() => { tokens = 250; }, 60_000).unref();
 export const dexStats = { requests: 0, errors: 0, lastSuccessAt: 0 as number, rateLimited: 0 };
 
-async function get(url: string): Promise<any | null> {
+/** Returns the cached or fresh body plus the time it was actually fetched (stale bodies keep their old time). */
+async function getAt(url: string): Promise<{ data: any; at: number } | null> {
   const hit = cache.get(url);
-  if (hit && Date.now() - hit.at < TTL_MS) return hit.data;
-  if (tokens <= 0) { dexStats.rateLimited++; return hit?.data ?? null; }
+  if (hit && Date.now() - hit.at < TTL_MS) return hit;
+  if (tokens <= 0) { dexStats.rateLimited++; return hit ?? null; }
   tokens--;
   dexStats.requests++;
   try {
     const r = await fetch(url, { headers: { accept: "application/json" } });
-    if (!r.ok) { dexStats.errors++; log("warn", "dexscreener error", { status: r.status, url }); return hit?.data ?? null; }
-    const data = await r.json();
-    cache.set(url, { at: Date.now(), data });
-    dexStats.lastSuccessAt = Date.now();
-    return data;
+    if (!r.ok) { dexStats.errors++; log("warn", "dexscreener error", { status: r.status, url }); return hit ?? null; }
+    const entry = { at: Date.now(), data: await r.json() };
+    cache.set(url, entry);
+    dexStats.lastSuccessAt = entry.at;
+    return entry;
   } catch (e) {
     dexStats.errors++;
-    return hit?.data ?? null;
+    return hit ?? null;
   }
 }
+const get = async (url: string) => (await getAt(url))?.data ?? null;
 
 export interface DexPair {
   chainId: string; dexId: string; pairAddress: string; baseToken: { address: string; symbol: string; name: string };
@@ -39,6 +41,12 @@ export async function tokenPairs(mint: string): Promise<DexPair[]> {
 }
 
 export async function pair(pool: string): Promise<DexPair | null> {
-  const d = await get(`https://api.dexscreener.com/latest/dex/pairs/solana/${pool}`);
-  return d?.pairs?.[0] ?? d?.pair ?? null;
+  return (await pairAt(pool))?.pair ?? null;
+}
+
+/** Pair plus when DEX Screener actually returned it (not when we last asked), so freshness isn't overstated. */
+export async function pairAt(pool: string): Promise<{ pair: DexPair; at: number } | null> {
+  const r = await getAt(`https://api.dexscreener.com/latest/dex/pairs/solana/${pool}`);
+  const p = r?.data?.pairs?.[0] ?? r?.data?.pair ?? null;
+  return p ? { pair: p, at: r!.at } : null;
 }

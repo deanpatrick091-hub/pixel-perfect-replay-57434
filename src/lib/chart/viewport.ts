@@ -2,10 +2,12 @@ import type { Candle } from "@/lib/feed/types";
 
 // Chart viewport rules (pure, tested). Sparse data must never stretch 1–2 candles across the screen.
 export const BAR_SPACING = 7;   // px per bar at the default zoom
-export const MIN_BARS = 90;     // the initial / "Fit" view always spans at least this many bar slots
+// The initial / "Fit" view spans max(MIN_BARS, plotWidth / BAR_SPACING) slots. A floor of 90 forced ~3.5px bars on
+// phones; 40 still stops 1–2 sparse candles from stretching while a ~320px phone plot gets ~7px spacing.
+export const MIN_BARS = 40;
 export const RIGHT_OFFSET = 5;  // empty bar slots kept right of the latest candle
 
-/** Logical range showing the newest candles right-aligned at ~BAR_SPACING px, never fewer than MIN_BARS slots. */
+/** Logical range showing the newest candles right-aligned at ~BAR_SPACING px, never fewer than MIN_BARS slots. `widthPx` is the plot width (excluding the price axis). */
 export function initialRange(n: number, widthPx: number) {
   const slots = Math.max(MIN_BARS, Math.floor(Math.max(0, widthPx) / BAR_SPACING));
   const to = n - 1 + RIGHT_OFFSET;
@@ -29,4 +31,16 @@ export function tailUpdateFrom(prev: Candle[], next: Candle[]): number {
   for (let i = 0; i < prev.length - 1; i++) if (!same(prev[i]!, next[i]!)) return -1;
   if (next[prev.length - 1]!.t !== prev[prev.length - 1]!.t) return -1;
   return prev.length - 1;
+}
+
+/**
+ * When older rows are prepended (backfill) while the user is panned/zoomed, shift the logical range by the number of
+ * prepended rows so the same candles stay in view at the same bar spacing. Null when the old first row is gone.
+ */
+export function preservedRange(prev: { t: number }[], next: { t: number }[], range: { from: number; to: number } | null) {
+  if (!range || !prev.length) return null;
+  const first = prev[0]!.t;
+  let k = -1;
+  for (let i = 0; i < next.length; i++) { if (next[i]!.t === first) { k = i; break; } if (next[i]!.t > first) break; }
+  return k < 0 ? null : { from: range.from + k, to: range.to + k };
 }

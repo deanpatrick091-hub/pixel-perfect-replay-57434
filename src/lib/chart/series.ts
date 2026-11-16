@@ -77,3 +77,12 @@ export function rowTailFrom(prev: ChartRow[], next: ChartRow[]) {
   const last = prev[prev.length - 1], replacement = next[prev.length - 1];
   return last && replacement && last.t === replacement.t ? prev.length - 1 : -1;
 }
+/**
+ * Same-unit check (SOL per token) between the header's pool price and the last verified swap close. They come from
+ * different sources and moments, so this only reports the difference; it never adjusts either value.
+ */
+export function headerComparison(candles: Candle[], headerPrice: number | null, headerAtMs: number | null) {
+  const last = candles[candles.length - 1];
+  if (!last || !(headerPrice != null && headerPrice > 0)) return null;
+  return { header: headerPrice, headerAtMs, close: last.c, closeT: last.t, pct: (headerPrice / last.c - 1) * 100 };
+}

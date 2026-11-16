@@ -16,8 +16,15 @@ const ERR_BACKOFF = [3_000, 6_000, 12_000, 30_000];
  */
 interface Snap { key: string; data: ChartHistory | null; netErr: boolean; latest: ChartHistory | null; fetchedAt: number | null }
 const TRANSIENT: ChartHistory["state"][] = ["loading", "rate_limited", "unavailable", "empty", "unknown_market"];
+/** The worker restarted and is rebuilding from its newest window: fewer swaps, later start, nothing newer than we hold. */
+export function isRegressedReload(prev: ChartHistory, next: ChartHistory) {
+  return next.coverage !== "complete" && next.swaps < prev.swaps && prev.oldestTs != null && next.oldestTs != null &&
+    next.oldestTs > prev.oldestTs && (next.newestTs ?? 0) <= (prev.newestTs ?? 0);
+}
 export function mergeSnapshot(prev: ChartHistory | null, next: ChartHistory): { data: ChartHistory; latest: ChartHistory | null } {
   if (prev && prev.candles.length && !next.candles.length && TRANSIENT.includes(next.state)) return { data: prev, latest: next };
+  // Keep the whole earlier snapshot (never mixed) until the reload catches up or brings a newer swap.
+  if (prev && prev.candles.length && next.candles.length && isRegressedReload(prev, next)) return { data: prev, latest: next };
   return { data: next, latest: null };
 }
 
