@@ -28,7 +28,6 @@ describe("chart viewport", () => {
     expect(tailUpdateFrom(prev, [c(120, 5), c(180)])).toBe(-1);
     expect(tailUpdateFrom([], [c(60)])).toBe(-1);
   });
-  });
   it("a ~320px phone plot gets 6–8px bars, not the old 3.5px", () => {
     const r = initialRange(400, 320);
     const px = 320 / (r.to - r.from);

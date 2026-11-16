@@ -1,6 +1,6 @@
 import { describe, expect, it, vi, afterEach } from "vitest";
 import { renderHook, act } from "@testing-library/react";
-import { useChartHistory, POLL_IDLE_MS, POLL_BUSY_MS, MIN_GAP_MS, STUCK_MS, type HistoryFetcher, type NudgeSubscribe } from "./useChartHistory";
+import { mergeSnapshot, useChartHistory, POLL_IDLE_MS, POLL_BUSY_MS, MIN_GAP_MS, STUCK_MS, type HistoryFetcher, type NudgeSubscribe } from "./useChartHistory";
 import type { ChartHistory } from "./types";
 
 const snap = (market: string, tf: string, swaps: number, state: ChartHistory["state"] = "ok"): ChartHistory => ({
@@ -160,5 +160,26 @@ describe("useChartHistory polling", () => {
     const n = fetcher.mock.calls.length;
     await act(async () => { await vi.advanceTimersByTimeAsync(POLL_BUSY_MS); });
     expect(fetcher.mock.calls.length).toBe(n + 1);
+  });
+});
+
+describe("mergeSnapshot after a worker restart", () => {
+  const candle = (t: number) => ({ t, o: 1, h: 1, l: 1, c: 1, v: 1, buys: 1, sells: 0, buyVolume: 1, sellVolume: 0 });
+  const h = (swaps: number, oldestTs: number, newestTs: number, coverage: ChartHistory["coverage"] = "in_progress"): ChartHistory => ({
+    ...snap("A", "1m", swaps, "partial"), coverage, oldestTs, newestTs, candles: [candle(oldestTs), candle(newestTs)],
+  });
+  it("a smaller reload starting later, with nothing newer, keeps the whole previous snapshot", () => {
+    const prev = h(361, 1000, 9000);
+    const r = mergeSnapshot(prev, h(20, 8000, 9000));
+    expect(r.data).toBe(prev);
+    expect(r.latest?.swaps).toBe(20);
+  });
+  it("a reload that brings a newer swap replaces the snapshot (current data wins)", () => {
+    const next = h(21, 8000, 9060);
+    expect(mergeSnapshot(h(361, 1000, 9000), next).data).toBe(next);
+  });
+  it("normal growth replaces the snapshot", () => {
+    const next = h(400, 500, 9000);
+    expect(mergeSnapshot(h(361, 1000, 9000), next)).toEqual({ data: next, latest: null });
   });
 });

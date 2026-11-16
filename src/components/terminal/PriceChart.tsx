@@ -2,8 +2,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { feed } from "@/lib/feed/client";
 import type { Candle, ChartHistory } from "@/lib/feed/types";
 import { useChartHistory } from "@/lib/feed/useChartHistory";
-import { BAR_SPACING, RIGHT_OFFSET, fitRange, initialRange } from "@/lib/chart/viewport";
-import { candleTone, isCandle, priceDigits, rowTailFrom, seriesRows, type ChartRow, type GapMode } from "@/lib/chart/series";
+import { BAR_SPACING, RIGHT_OFFSET, fitRange, initialRange, preservedRange } from "@/lib/chart/viewport";
+import { candleTone, headerComparison, isCandle, priceDigits, rowTailFrom, seriesRows, type ChartRow, type GapMode } from "@/lib/chart/series";
 import { INTERVALS } from "@/lib/market/candles";
 import { Button } from "@/components/ui/button";
 import { fmtPriceSig } from "@/lib/format";
@@ -32,7 +32,10 @@ const ago = (ms: number | null | undefined, now: number) => {
 };
 type Tone = "live" | "ok" | "warn" | "bad";
 
-export function PriceChart({ marketId, quoteCcy, tick, liveTrades }: { marketId: string; quoteCcy: string; tick: number; liveTrades: boolean }) {
+/** `header*`: the token page's own pool price (same SOL-per-token unit) for a disclosed same-unit comparison only. */
+export function PriceChart({ marketId, quoteCcy, tick, liveTrades, headerPrice = null, headerAt = null, headerSource = null }: {
+  marketId: string; quoteCcy: string; tick: number; liveTrades: boolean; headerPrice?: number | null; headerAt?: number | null; headerSource?: string | null;
+}) {
   const wrap = useRef<HTMLDivElement>(null);
   const el = useRef<HTMLDivElement>(null);
   const api = useRef<{ chart: any; candles: any; buyVolume: any; sellVolume: any; up: string; down: string } | null>(null);
@@ -136,7 +139,9 @@ export function PriceChart({ marketId, quoteCcy, tick, liveTrades }: { marketId:
   const resetView = useCallback((n: number, fit = false) => {
     const a = api.current;
     if (!a || !el.current || !n) return;
-    a.chart.timeScale().setVisibleLogicalRange((fit ? fitRange : initialRange)(n, el.current.clientWidth));
+    // Plot width (excluding the price axis), so phones get the same ~7px bar spacing as desktop.
+    const w = a.chart.timeScale().width() || el.current.clientWidth;
+    a.chart.timeScale().setVisibleLogicalRange((fit ? fitRange : initialRange)(n, w));
   }, []);
 
   useEffect(() => {
@@ -164,6 +169,7 @@ export function PriceChart({ marketId, quoteCcy, tick, liveTrades }: { marketId:
     } else {
       const ts = a.chart.timeScale();
       const range = prev ? ts.getVisibleRange() : null;
+      const logical = prev ? ts.getVisibleLogicalRange() : null;
       const tracking = prev ? ts.scrollPosition() >= RIGHT_OFFSET - 1 : true;
       a.candles.setData(rows.map(bar));
       a.buyVolume.setData(rows.map((c) => vol(c, "buyVolume")));
@@ -171,18 +177,25 @@ export function PriceChart({ marketId, quoteCcy, tick, liveTrades }: { marketId:
       // First data for this market/timeframe: narrow right-aligned view. Later replacements keep the user's pan/zoom.
       if (!prev || !prev.length) resetView(rows.length);
       else if (tracking) ts.scrollToRealTime();
-      else if (range) ts.setVisibleRange(range);
+      else {
+        // Backfill prepended older rows: shift by the prepended count so the same candles stay put at the same spacing.
+        const kept = prev ? preservedRange(prev, rows, logical) : null;
+        if (kept) ts.setVisibleLogicalRange(kept);
+        else if (range) ts.setVisibleRange(range);
+      }
     }
     shown.current = { key: viewKey, list: rows };
   }, [expanded, viewKey, ready, resetView, precision]);
 
   const fit = useCallback(() => resetView(shown.current?.list.length ?? 0, true), [resetView]);
-  const latest = useCallback(() => api.current?.chart.timeScale().scrollToRealTime(), []);
+  // "Latest": newest candles right-aligned at the default narrow spacing (after Fit, scrolling alone would keep the squeezed spacing).
+  const latest = useCallback(() => resetView(shown.current?.list.length ?? 0), [resetView]);
 
   // ---- status (outside the canvas) ----
   const streaming = h?.live?.state === "streaming";
   const complete = h?.coverage === "complete";
   const status = ((): { tone: Tone; text: string; retry?: boolean } => {
+    if (hist.latest?.candles.length) return { tone: "warn", text: `Market service returned less history (${hist.latest.swaps} swaps, likely restarted and reloading) · showing the previous snapshot of ${h?.swaps ?? 0} verified swaps until it catches up or a newer swap arrives` };
     if (hist.latest) return { tone: "warn", text: `${hist.latest.error ?? `Latest attempt: ${hist.latest.state}`} · retaining ${h?.swaps ?? 0} verified swaps`, retry: true };
     if (useLive) return { tone: "live", text: `Swaps streamed by PumpPortal · ${list.reduce((n, c) => n + c.buys + c.sells, 0)} swaps` };
     if (!h) return hist.netErr ? { tone: "bad", text: "Market service unreachable · retrying", retry: true } : { tone: "ok", text: "Loading on-chain history…" };
@@ -233,6 +246,8 @@ export function PriceChart({ marketId, quoteCcy, tick, liveTrades }: { marketId:
     if (h.error) out.push(`Last error: ${h.error}`);
     if (h.lastRateLimitAt) out.push(`Last rate limit: ${clock(h.lastRateLimitAt)}.`);
     out.push(`Last RPC contact ${clock(h.lastSuccessAt)}${h.completedAt ? ` · coverage complete ${clock(h.completedAt)}` : ""}.`);
+    const cmp = headerComparison(list, headerPrice, headerAt);
+    if (cmp) out.push(`Same-unit check (${quoteCcy} per token): page header ${fmtPriceSig(cmp.header, 4)} (${headerSource ?? "pool state"}, ${cmp.headerAtMs ? `fetched ${clock(cmp.headerAtMs)}` : "time unknown"}) vs last verified swap close ${fmtPriceSig(cmp.close, 4)} (${clock(cmp.closeT * 1000)}): ${cmp.pct >= 0 ? "+" : ""}${cmp.pct.toFixed(2)}%. Different sources and moments, so small differences are expected; the header's USD price is its ${quoteCcy} price × the SOL/USD reference.`);
     out.push(`Prices are SOL per token from verified swaps. Market cap / USD view is not offered: it would need a verified historical SOL/USD rate for every candle, which this chart doesn't have.`);
     out.push("Each candle aggregates verified swaps in its interval. Blank slots have no invented OHLC or volume. Buy volume above zero and sell volume below zero use verified swap direction, not candle colour. Missing coverage is not proof an interval had no swaps.");
     return out;

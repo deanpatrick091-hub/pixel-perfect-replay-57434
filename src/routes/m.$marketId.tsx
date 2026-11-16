@@ -100,7 +100,7 @@ function Terminal() {
 
       <div className="grid min-h-0 flex-1 grid-cols-[minmax(0,1fr)] lg:grid-cols-[minmax(0,1fr)_300px] lg:grid-rows-[1fr_240px]">
         <div className={cn("min-h-[320px] min-w-0 border-border lg:border-r lg:border-b", mobileTab !== "chart" && "hidden lg:block")}>
-          <PriceChart marketId={m.id} quoteCcy={m.quoteCcy} tick={tape[0]?.receivedAt ?? 0} liveTrades={m.tradeFeed === "live"} />
+          <PriceChart marketId={m.id} quoteCcy={m.quoteCcy} tick={tape[0]?.receivedAt ?? 0} liveTrades={m.tradeFeed === "live"} headerPrice={m.priceQuote} headerAt={m.stateUpdatedAt} headerSource={m.quoteModel === "cpmm_reserves" ? "DEX Screener pool price" : "curve reserves"} />
         </div>
         <aside className={cn("scroll-thin overflow-y-auto border-border lg:row-span-2", mobileTab !== "trade" && "hidden lg:block")}>
           <OrderTicket m={m} reference={feed.reference} />
