@@ -128,7 +128,8 @@ export function PriceChart({ marketId, quoteCcy, tick, liveTrades }: { marketId:
   const legend = useMemo(() => {
     if (!list.length) return null;
     const c = hover != null ? list.find((x) => x.t === hover) ?? null : list[list.length - 1]!;
-    return { t: hover ?? list[list.length - 1]!.t, c };
+    const i = c ? list.indexOf(c) : -1;
+    return { t: hover ?? list[list.length - 1]!.t, c, prev: i > 0 ? list[i - 1]! : null };
   }, [hover, list]);
 
   const resetView = useCallback((n: number, fit = false) => {
@@ -288,7 +289,7 @@ export function PriceChart({ marketId, quoteCcy, tick, liveTrades }: { marketId:
       )}
       <div className="relative min-h-[260px] flex-1">
         <div ref={el} className="absolute inset-0" />
-        {legend && <Legend t={legend.t} c={legend.c} tf={tf} quoteCcy={quoteCcy} sig={precision.sig} />}
+        {legend && <Legend t={legend.t} c={legend.c} prev={legend.prev} tf={tf} quoteCcy={quoteCcy} sig={precision.sig} />}
         {gapMode === "compact" && expanded.gaps > 0 && (
           <span className="num pointer-events-none absolute left-2 top-11 z-10 rounded bg-background/70 px-1 text-[10px] text-warn sm:hidden">gaps compressed</span>
         )}
@@ -301,9 +302,9 @@ export function PriceChart({ marketId, quoteCcy, tick, liveTrades }: { marketId:
   );
 }
 
-function Legend({ t, c, tf, quoteCcy, sig }: { t: number; c: Candle | null; tf: string; quoteCcy: string; sig: number }) {
+function Legend({ t, c, prev, tf, quoteCcy, sig }: { t: number; c: Candle | null; prev: Candle | null; tf: string; quoteCcy: string; sig: number }) {
   const time = new Date(t * 1000).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", second: tf.endsWith("s") ? "2-digit" : undefined });
-  const tone = c ? (c.c >= c.o ? "text-up" : "text-down") : "text-muted-foreground";
+  const tone = c ? (candleTone(c, prev) === "up" ? "text-up" : "text-down") : "text-muted-foreground";
   const chg = c && c.o ? ((c.c - c.o) / c.o) * 100 : null;
   const f = (p: number) => fmtPriceSig(p, sig);
   return (
