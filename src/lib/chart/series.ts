@@ -9,7 +9,7 @@ export type GapMode = "compact" | "time";
 
 /**
  * Default "compact" view: only real traded intervals, side by side, each keeping its real timestamp.
- * `gaps` counts the quiet intervals compressed out (disclosed in the UI); nothing is joined or invented.
+ * `gaps` counts intervals with no loaded swaps compressed out (quiet only when coverage is complete) (disclosed in the UI); nothing is joined or invented.
  */
 export function compactRows(candles: Candle[], intervalSec: number) {
   let gaps = 0;
