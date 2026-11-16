@@ -15,6 +15,13 @@
       "when": 1794256416029,
       "tag": "0001_paper_orders_null_amount_guard",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1794819962520,
+      "tag": "0002_tighten_public_config_status_policies",
+      "breakpoints": true
     }
   ]
 }
