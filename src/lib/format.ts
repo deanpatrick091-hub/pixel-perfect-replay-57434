@@ -52,3 +52,17 @@ export function fmtAge(ms: number | null | undefined, now = Date.now()): string 
 }
 
 export const shortAddr = (a: string, n = 4) => (a.length > n * 2 + 2 ? `${a.slice(0, n)}…${a.slice(-n)}` : a);
+
+/** Price with `sig` significant digits (subscript-zero notation below 0.001), so adjacent axis ticks stay distinct. */
+export function fmtPriceSig(v: number, sig: number): string {
+  if (!Number.isFinite(v)) return "—";
+  if (v === 0) return "0";
+  const a = Math.abs(v);
+  if (a >= 1000) return v.toLocaleString("en-US", { maximumFractionDigits: 0 });
+  if (a >= 0.001) return String(Number(v.toPrecision(sig)));
+  const exp = Math.floor(Math.log10(a));
+  const zeros = -exp - 1;
+  const digits = String(Math.round(a * 10 ** (sig - 1 - exp))).slice(0, sig);
+  const sub = String(zeros).split("").map((d) => SUB[Number(d)]).join("");
+  return `${v < 0 ? "-" : ""}0.0${sub}${digits}`;
+}

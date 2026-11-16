@@ -5,6 +5,34 @@ export const MAX_GAP_SLOTS = 6_000;
 export type ChartRow = Candle | { t: number };
 export const isCandle = (row: ChartRow): row is Candle => "o" in row;
 
+export type GapMode = "compact" | "time";
+
+/**
+ * Default "compact" view: only real traded intervals, side by side, each keeping its real timestamp.
+ * `gaps` counts the quiet intervals compressed out (disclosed in the UI); nothing is joined or invented.
+ */
+export function compactRows(candles: Candle[], intervalSec: number) {
+  let gaps = 0;
+  for (let i = 1; i < candles.length; i++) gaps += Math.max(0, Math.ceil((candles[i]!.t - candles[i - 1]!.t) / intervalSec) - 1);
+  return { rows: candles.slice() as ChartRow[], omitted: 0, gaps };
+}
+
+export function seriesRows(candles: Candle[], intervalSec: number, mode: GapMode) {
+  return mode === "compact" ? compactRows(candles, intervalSec) : { ...chartRows(candles, intervalSec), gaps: 0 };
+}
+
+/** Significant digits for price labels so adjacent axis ticks across the visible candles stay distinguishable. */
+export function priceDigits(candles: Candle[]) {
+  let hi = 0, lo = Infinity;
+  for (const c of candles) { if (c.h > hi) hi = c.h; if (c.l > 0 && c.l < lo) lo = c.l; }
+  if (!(hi > 0) || !Number.isFinite(lo)) return { sig: 4, minMove: 1e-12 };
+  const span = hi - lo || hi * 1e-3;
+  const step = span / 10; // ~10 axis ticks
+  const sig = Math.min(9, Math.max(4, Math.ceil(Math.log10(hi / step)) + 1));
+  const minMove = 10 ** (Math.floor(Math.log10(hi)) - sig + 1);
+  return { sig, minMove };
+}
+
 export function chartRows(candles: Candle[], intervalSec: number) {
   const rows: ChartRow[] = [];
   let remaining = MAX_GAP_SLOTS, omitted = 0;

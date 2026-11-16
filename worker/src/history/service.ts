@@ -19,8 +19,9 @@ const CONTINUE_MS = 1_500;             // continue in-progress work this soon
 const FAIL_RETRY_MS = 5_000;           // retry after a non-rate-limit failure
 const SIG_PAGE = 100;
 const FIRST_WINDOW = 100;              // first view seeds from the newest N signatures, then backfills older ones
-export const BACKFILL_MAX_SIGS = 1_000; // older history: at most this many signatures listed in total...
-export const BACKFILL_MAX_AGE_SEC = 3_600; // ...and no older than this before the newest swap at first view
+export const BACKFILL_MAX_SIGS = 2_000; // older history: at most this many signatures listed in total...
+// Quiet pools: 100 signatures can already span hours, so a 1h floor stopped backfill after the first page.
+export const BACKFILL_MAX_AGE_SEC = 48 * 3_600; // ...and no older than this before the newest swap at first view
 const BACKFILL_AHEAD = 100;            // don't list more older signatures than this ahead of decoding
 const SIG_PAGES_PER_REFRESH = 3;
 const TX_PER_REFRESH = 30;

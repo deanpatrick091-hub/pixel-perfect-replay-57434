@@ -60,14 +60,14 @@ test("backfill: seeds newest window, then pages older history within the signatu
   let n = 0;
   const page = (k: number) => Array.from({ length: k }, () => { const i = n++; const id = `B${i}`; txs[id] = tx(1_000_000 - i, 1_700_000_000 - i, [eventData({ sol: 1_000_000n, tok: 1_000_000n, buy: i % 2 === 0 })]); return { ...sig(id, 1_000_000 - i), blockTime: 1_700_000_000 - i }; });
   const first = page(100);
-  const older = Array.from({ length: 12 }, () => page(100));
+  const older = Array.from({ length: 22 }, () => page(100));
   const h = harness({ sigs: [first], older, txs });
   await h.run();
   const s1 = h.snap();
   assert.equal(s1.backfill!.state, "in_progress");
   assert.ok(s1.swaps > 0, "chart seeded from the newest swaps first");
   assert.ok(h.prios.filter(([m]) => m.startsWith("B")).slice(0, 5).every(([m]) => Number(m.slice(1)) < 100), "newest decoded first");
-  for (let i = 0; i < 120; i++) { await h.run(); h.advance(2_000); }
+  for (let i = 0; i < 260; i++) { await h.run(); h.advance(2_000); }
   const s = h.snap(1);
   assert.equal(s.backfill!.state, "done_limit");
   assert.equal(s.backfill!.listedSignatures, BACKFILL_MAX_SIGS);
@@ -79,15 +79,25 @@ test("backfill: seeds newest window, then pages older history within the signatu
 test("backfill: stops at the age floor and at curve creation", async () => {
   const txs: Record<string, any> = {};
   const mk = (from: number, k: number, dt: number) => Array.from({ length: k }, (_, j) => { const i = from + j; const id = `A${i}`; txs[id] = tx(9_000_000 - i, 1_700_000_000 - i * dt, [eventData({ sol: 1_000_000n, tok: 1_000_000n, buy: true })]); return { ...sig(id, 9_000_000 - i), blockTime: 1_700_000_000 - i * dt }; });
-  const h = harness({ sigs: [mk(0, 100, 30)], older: [mk(100, 100, 30)], txs }); // 30s apart: floor (3600s) reached at i=120
+  const h = harness({ sigs: [mk(0, 100, 1200)], older: [mk(100, 100, 1200)], txs }); // 20min apart: 48h floor reached at i=144
   for (let i = 0; i < 40; i++) { await h.run(); h.advance(2_000); }
   const s = h.snap();
   assert.equal(s.backfill!.state, "done_age");
-  assert.ok(s.oldestTs! >= 1_700_000_000 - 3_600);
+  assert.ok(s.oldestTs! >= 1_700_000_000 - 48 * 3_600);
+  assert.ok(s.swaps > 100, "kept backfilling past the first window");
   const h2 = harness({ sigs: [mk(500, 100, 1)], older: [mk(600, 20, 1)], txs });
   for (let i = 0; i < 40; i++) { await h2.run(); h2.advance(2_000); }
   assert.equal(h2.snap().backfill!.state, "done_start");
   assert.equal(h2.snap().swaps, 120);
+});
+
+test("backfill: a quiet pool whose newest 100 swaps span hours keeps loading older history", async () => {
+  const txs: Record<string, any> = {};
+  const mk = (from: number, k: number, dt: number) => Array.from({ length: k }, (_, j) => { const i = from + j; const id = `Q${i}`; txs[id] = tx(8_000_000 - i, 1_700_000_000 - i * dt, [eventData({ sol: 1_000_000n, tok: 1_000_000n, buy: true })]); return { ...sig(id, 8_000_000 - i), blockTime: 1_700_000_000 - i * dt }; });
+  const h = harness({ sigs: [mk(0, 100, 150)], older: [mk(100, 50, 150)], txs }); // first window spans ~4h
+  for (let i = 0; i < 60; i++) { await h.run(); h.advance(2_000); }
+  assert.equal(h.snap().backfill!.state, "done_start");
+  assert.equal(h.snap().swaps, 150);
 });
 
 test("live hint is decoded before backfill and deduplicated against the later signature listing", async () => {

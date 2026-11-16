@@ -56,7 +56,7 @@ Opened Pump.fun bonding-curve markets get candles from on-chain swaps via free p
   Delivery of every swap isn't guaranteed; reconnects (backoff 1s→30s, ping watchdog) trigger an immediate catch-up scan.
 - **Order of work:** live hints > newest signatures (re-listed every 15s, gap-safe paging) > older backfill.
   First view seeds from the newest 100 signatures, then pages older history at low priority until it reaches the curve's
-  first transaction, 1,000 signatures, or 60 minutes before first view, whichever comes first; the chart says which.
+  first transaction, 2,000 signatures, or 48 hours before first view, whichever comes first; the chart says which.
 - **RPC budget:** one shared queue (default 2 req/s, 2 concurrent, max 100 queued; full queue rejects instead of growing).
   Timeouts/network/5xx are retried once, then the transaction is retried with backoff (live: 1–5s; history: 1s→60s, 8 tries)
   before it's reported as failed. 429 → global cooldown 5s→2min and the budget slows (x1.5, down to 1/4); 403 → separate

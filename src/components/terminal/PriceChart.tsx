@@ -3,10 +3,10 @@ import { feed } from "@/lib/feed/client";
 import type { Candle, ChartHistory } from "@/lib/feed/types";
 import { useChartHistory } from "@/lib/feed/useChartHistory";
 import { BAR_SPACING, RIGHT_OFFSET, fitRange, initialRange } from "@/lib/chart/viewport";
-import { chartRows, isCandle, rowTailFrom, type ChartRow } from "@/lib/chart/series";
+import { isCandle, priceDigits, rowTailFrom, seriesRows, type ChartRow, type GapMode } from "@/lib/chart/series";
 import { INTERVALS } from "@/lib/market/candles";
 import { Button } from "@/components/ui/button";
-import { fmtPrice } from "@/lib/format";
+import { fmtPriceSig } from "@/lib/format";
 import { cn } from "@/lib/utils";
 
 export const TIMEFRAMES = ["1s", "5s", "15s", "1m", "5m", "15m", "1h", "4h", "1D"] as const;
@@ -44,6 +44,9 @@ export function PriceChart({ marketId, quoteCcy, tick, liveTrades }: { marketId:
   const [now, setNow] = useState(() => Date.now());
   const [live, setLive] = useState<{ candles: Candle[]; note: string } | null>(null);
   const [hover, setHover] = useState<number | null>(null);
+  // Default: traded intervals side by side (quiet intervals compressed, disclosed). "time" keeps real spacing.
+  const [gapMode, setGapMode] = useState<GapMode>("compact");
+  const digits = useRef(4);
   const shown = useRef<{ key: string; list: ChartRow[] } | null>(null);
 
   useEffect(() => { const t = setInterval(() => setNow(Date.now()), 1000); return () => clearInterval(t); }, []);
@@ -76,13 +79,13 @@ export function PriceChart({ marketId, quoteCcy, tick, liveTrades }: { marketId:
           vertLine: { color: fg + "99", width: 1, style: lc.LineStyle.Dashed, labelBackgroundColor: surface },
           horzLine: { color: fg + "99", width: 1, style: lc.LineStyle.Dashed, labelBackgroundColor: surface },
         },
-        localization: { priceFormatter: (p: number) => fmtPrice(p, "") },
+        localization: { priceFormatter: (p: number) => fmtPriceSig(p, digits.current) },
       });
       const up = cssVar("--up"), down = cssVar("--down");
       // Close >= open is bullish (green), close < open bearish (red); body, border and wick all follow.
       const candles = chart.addSeries(lc.CandlestickSeries, {
         upColor: up, downColor: down, borderUpColor: up, borderDownColor: down, wickUpColor: up, wickDownColor: down,
-        priceFormat: { type: "custom", formatter: (p: number) => fmtPrice(p, ""), minMove: 1e-12 },
+        priceFormat: { type: "custom", formatter: (p: number) => fmtPriceSig(p, digits.current), minMove: 1e-12 },
       });
       chart.applyOptions({ layout: { panes: { separatorColor: border, separatorHoverColor: border + "66", enableResize: true } } });
       // Separate volume pane: verified buy volume above zero, sell volume below zero.
@@ -116,8 +119,9 @@ export function PriceChart({ marketId, quoteCcy, tick, liveTrades }: { marketId:
   }, [useLive, ready, marketId, tf, tick]);
 
   const list: Candle[] = useMemo(() => (useLive ? live?.candles ?? [] : h?.candles ?? []), [useLive, live, h]);
-  const viewKey = `${marketId}|${tf}|${useLive ? "live" : "hist"}`;
-  const expanded = useMemo(() => chartRows(list, INTERVALS[tf] ?? 60), [list, tf]);
+  const viewKey = `${marketId}|${tf}|${useLive ? "live" : "hist"}|${gapMode}`;
+  const expanded = useMemo(() => seriesRows(list, INTERVALS[tf] ?? 60, gapMode), [list, tf, gapMode]);
+  const precision = useMemo(() => priceDigits(list), [list]);
   const pressure = useMemo(() => list.length && list.every((c) => c.buyVolume != null && c.sellVolume != null)
     ? list.reduce((p, c) => ({ buy: p.buy + (c.buyVolume ?? 0), sell: p.sell + (c.sellVolume ?? 0) }), { buy: 0, sell: 0 }) : null, [list]);
 
@@ -141,6 +145,10 @@ export function PriceChart({ marketId, quoteCcy, tick, liveTrades }: { marketId:
     const vol = (c: ChartRow, side: "buyVolume" | "sellVolume") => isCandle(c) && c[side] != null
       ? ({ time: c.t, value: (c[side] ?? 0) * (side === "sellVolume" ? -1 : 1) }) : ({ time: c.t });
     const rows = expanded.rows;
+    if (digits.current !== precision.sig || !shown.current) {
+      digits.current = precision.sig;
+      a.candles.applyOptions({ priceFormat: { type: "custom", formatter: (p: number) => fmtPriceSig(p, digits.current), minMove: precision.minMove } });
+    }
     const prev = shown.current?.key === viewKey ? shown.current.list : null;
     const from = prev ? rowTailFrom(prev, rows) : -1;
     if (from >= 0) {
@@ -159,7 +167,7 @@ export function PriceChart({ marketId, quoteCcy, tick, liveTrades }: { marketId:
       else if (range) ts.setVisibleRange(range);
     }
     shown.current = { key: viewKey, list: rows };
-  }, [expanded, viewKey, ready, resetView]);
+  }, [expanded, viewKey, ready, resetView, precision]);
 
   const fit = useCallback(() => resetView(shown.current?.list.length ?? 0, true), [resetView]);
   const latest = useCallback(() => api.current?.chart.timeScale().scrollToRealTime(), []);
@@ -190,6 +198,7 @@ export function PriceChart({ marketId, quoteCcy, tick, liveTrades }: { marketId:
   const diag = ((): string[] => {
     if (!h || historyOff) return h?.error ? [h.error] : [];
     const out: string[] = [];
+    if (gapMode === "compact" && expanded.gaps) out.push(`Compact view: ${expanded.gaps} quiet ${tf} intervals with no verified swaps are compressed so traded candles sit side by side. Each candle keeps its real timestamp and OHLC; nothing is joined or filled. Switch "Gaps" to "Time" for real time spacing.`);
     if (expanded.omitted) out.push(`Time spacing: ${expanded.omitted} older empty interval slots omitted at the 6,000-slot display cap; all verified candles are retained. Blank intervals contain no OHLC or volume; incomplete coverage can also leave blanks.`);
     out.push(`Source: ${h.marketKind === "amm" ? `PumpSwap Buy/Sell events (${h.poolVerified ? "exact on-chain pool and mint verified" : "pool and mint verification pending"}; gross SOL swap notional, excluding separately reported fees)` : "Pump.fun TradeEvents"} decoded from confirmed transactions via free public Solana RPC (read-only; never used for prices or paper orders).`);
     out.push(streaming
@@ -214,6 +223,7 @@ export function PriceChart({ marketId, quoteCcy, tick, liveTrades }: { marketId:
     if (h.error) out.push(`Last error: ${h.error}`);
     if (h.lastRateLimitAt) out.push(`Last rate limit: ${clock(h.lastRateLimitAt)}.`);
     out.push(`Last RPC contact ${clock(h.lastSuccessAt)}${h.completedAt ? ` · coverage complete ${clock(h.completedAt)}` : ""}.`);
+    out.push(`Prices are SOL per token from verified swaps. Market cap / USD view is not offered: it would need a verified historical SOL/USD rate for every candle, which this chart doesn't have.`);
     out.push("Each candle aggregates verified swaps in its interval. Blank slots have no invented OHLC or volume. Buy volume above zero and sell volume below zero use verified swap direction, not candle colour. Missing coverage is not proof an interval had no swaps.");
     return out;
   })();
@@ -244,6 +254,10 @@ export function PriceChart({ marketId, quoteCcy, tick, liveTrades }: { marketId:
           ))}
         </div>
         <div className="flex shrink-0 items-center gap-0.5 border-l border-border pl-1">
+          <Button variant="ghost" size="xs" onClick={() => setGapMode((m) => (m === "compact" ? "time" : "compact"))} className="text-[11px] text-muted-foreground"
+            aria-label={gapMode === "compact" ? "Quiet intervals compressed; switch to real time spacing" : "Real time spacing; switch to compact traded intervals"}>
+            {gapMode === "compact" ? "Gaps: Compact" : "Gaps: Time"}
+          </Button>
           <Button variant="ghost" size="xs" onClick={fit} className="text-[11px] text-muted-foreground" aria-label="Fit candles">Fit</Button>
           <Button variant="ghost" size="xs" onClick={latest} className="text-[11px] text-muted-foreground" aria-label="Jump to latest candle">Latest</Button>
         </div>
@@ -256,9 +270,10 @@ export function PriceChart({ marketId, quoteCcy, tick, liveTrades }: { marketId:
           <Button variant="ghost" size="xs" onClick={() => setDetails((d) => !d)} aria-expanded={details} className="shrink-0">{details ? "Hide" : "Details"}</Button>
         )}
       </div>
-      <div className="num flex flex-wrap gap-x-3 border-b border-border px-2 py-1 text-[11px]" aria-label="Verified swap volume">
+      <div className="num hidden flex-wrap gap-x-3 border-b border-border px-2 py-1 text-[11px] sm:flex" aria-label="Verified swap volume">
         <span className="text-muted-foreground">Volume · available history</span>
         {pressure ? <><span className="text-up">Buy {pressure.buy.toFixed(3)} {quoteCcy}</span><span className="text-down">Sell {pressure.sell.toFixed(3)} {quoteCcy}</span><span className="text-muted-foreground">Buy {((pressure.buy / (pressure.buy + pressure.sell)) * 100).toFixed(1)}%</span></> : <span className="text-muted-foreground">Buy/sell volume unavailable</span>}
+        {gapMode === "compact" && expanded.gaps > 0 && <span className="text-warn">{expanded.gaps} quiet intervals compressed</span>}
         {expanded.omitted > 0 && <span className="text-warn">Older time gaps compressed</span>}
       </div>
       {details && diag.length > 0 && (
@@ -268,7 +283,10 @@ export function PriceChart({ marketId, quoteCcy, tick, liveTrades }: { marketId:
       )}
       <div className="relative min-h-[260px] flex-1">
         <div ref={el} className="absolute inset-0" />
-        {legend && <Legend t={legend.t} c={legend.c} tf={tf} quoteCcy={quoteCcy} />}
+        {legend && <Legend t={legend.t} c={legend.c} tf={tf} quoteCcy={quoteCcy} sig={precision.sig} />}
+        {gapMode === "compact" && expanded.gaps > 0 && (
+          <span className="num pointer-events-none absolute right-16 top-1.5 z-10 rounded bg-background/70 px-1 text-[10px] text-warn sm:hidden">gaps compressed</span>
+        )}
         {chartError && <div role="alert" className="p-6 text-center text-xs text-muted-foreground">Chart failed to load. Refresh to try again.</div>}
         {emptyMsg && (
           <div className="pointer-events-none absolute inset-0 grid place-items-center p-6 text-center text-xs text-muted-foreground"><div>{emptyMsg}</div></div>
@@ -278,23 +296,23 @@ export function PriceChart({ marketId, quoteCcy, tick, liveTrades }: { marketId:
   );
 }
 
-function Legend({ t, c, tf, quoteCcy }: { t: number; c: Candle | null; tf: string; quoteCcy: string }) {
+function Legend({ t, c, tf, quoteCcy, sig }: { t: number; c: Candle | null; tf: string; quoteCcy: string; sig: number }) {
   const time = new Date(t * 1000).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", second: tf.endsWith("s") ? "2-digit" : undefined });
   const tone = c ? (c.c >= c.o ? "text-up" : "text-down") : "text-muted-foreground";
   const chg = c && c.o ? ((c.c - c.o) / c.o) * 100 : null;
-  const f = (p: number) => fmtPrice(p, "");
+  const f = (p: number) => fmtPriceSig(p, sig);
   return (
     <div className="num pointer-events-none absolute left-2 top-1.5 z-10 flex max-w-[calc(100%-5rem)] flex-wrap gap-x-2 gap-y-0 rounded bg-background/70 px-1.5 py-0.5 text-[10.5px] leading-4 backdrop-blur-sm" aria-live="off">
-      <span className="text-muted-foreground">{tf} · {quoteCcy} · {time}</span>
+      <span className="text-muted-foreground"><span className="hidden sm:inline">{tf} · {quoteCcy} · </span>{time}</span>
       {c ? (
         <>
-          <span><span className="text-muted-foreground">O</span> <span className={tone}>{f(c.o)}</span></span>
-          <span><span className="text-muted-foreground">H</span> <span className={tone}>{f(c.h)}</span></span>
-          <span><span className="text-muted-foreground">L</span> <span className={tone}>{f(c.l)}</span></span>
+          <span className="hidden sm:inline"><span className="text-muted-foreground">O</span> <span className={tone}>{f(c.o)}</span></span>
+          <span className="hidden sm:inline"><span className="text-muted-foreground">H</span> <span className={tone}>{f(c.h)}</span></span>
+          <span className="hidden sm:inline"><span className="text-muted-foreground">L</span> <span className={tone}>{f(c.l)}</span></span>
           <span><span className="text-muted-foreground">C</span> <span className={tone}>{f(c.c)}</span></span>
           {chg != null && <span className={tone}>{chg >= 0 ? "+" : ""}{chg.toFixed(2)}%</span>}
           <span><span className="text-muted-foreground">Vol</span> {c.v.toFixed(3)}</span>
-          {c.buyVolume != null && c.sellVolume != null && <span><span className="text-up">B {c.buyVolume.toFixed(3)}</span> <span className="text-down">S {c.sellVolume.toFixed(3)}</span></span>}
+          {c.buyVolume != null && c.sellVolume != null && <span className="hidden sm:inline"><span className="text-up">B {c.buyVolume.toFixed(3)}</span> <span className="text-down">S {c.sellVolume.toFixed(3)}</span></span>}
           <span className="text-muted-foreground">{c.buys + c.sells} swaps</span>
         </>
       ) : <span className="text-muted-foreground">no verified swaps recorded in this interval</span>}
