@@ -35,9 +35,14 @@ function Status() {
     <div className="scroll-thin h-full overflow-y-auto p-3">
       <div className="mx-auto max-w-4xl space-y-3">
         <div className="panel p-4">
-          <div className="mb-2 flex items-center gap-3"><h1 className="text-sm font-semibold">Feed status</h1><StatusDot status={feed.status} lastAt={feed.lastMessageAt} /></div>
+          <div className="mb-2 flex items-center gap-3"><h1 className="text-sm font-semibold">Feed status</h1><StatusDot status={feed.status} lastAt={feed.lastMessageAt} kind={feed.setupKind} /></div>
           {!hb ? (
-            <p className="text-sm text-muted-foreground">The market service has never checked in. Follow the setup steps below.</p>
+            <p className="text-sm text-muted-foreground">
+              {feed.lastHeartbeatAt
+                ? `The market service is offline — last check-in ${new Date(feed.lastHeartbeatAt).toLocaleString()}. Detailed stats are only kept visible for a day; start the service again to see them.`
+                : feed.setupKind === "read_error" ? "Couldn't read the market service's status. Retrying automatically."
+                : feed.status === "checking" ? "Checking the market service…" : "The market service has never checked in. Follow the setup steps below."}
+            </p>
           ) : (
             <dl className="grid grid-cols-2 gap-x-6 gap-y-1 text-xs md:grid-cols-4">
               <Item k="Last heartbeat" v={`${fmtAge(new Date(hb.last_heartbeat_at).getTime())} ago`} />

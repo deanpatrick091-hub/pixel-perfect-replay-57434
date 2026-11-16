@@ -74,7 +74,7 @@ export function AppShell({ children }: { children: ReactNode }) {
           ))}
         </nav>
         <div className="ml-auto flex items-center gap-3">
-          <Link to="/status" className="hidden sm:block"><StatusDot status={feed.status} lastAt={feed.lastMessageAt} /></Link>
+          <Link to="/status" className="hidden sm:block"><StatusDot status={feed.status} lastAt={feed.lastMessageAt} kind={feed.setupKind} /></Link>
           <BalanceChip />
         </div>
       </header>

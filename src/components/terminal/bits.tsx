@@ -34,8 +34,11 @@ const STATUS: Record<FeedStatus, { label: string; cls: string }> = {
   stale: { label: "Stale", cls: "bg-down" },
 };
 
-export function StatusDot({ status, lastAt }: { status: FeedStatus; lastAt?: number }) {
-  const s = STATUS[status];
+const SETUP_LABEL = { never: "Not set up", offline: "Offline", no_url: "Misconfigured", read_error: "Status unknown", unreachable: "Unreachable" } as const;
+
+export function StatusDot({ status, lastAt, kind }: { status: FeedStatus; lastAt?: number; kind?: keyof typeof SETUP_LABEL | null }) {
+  const base = STATUS[status];
+  const s = status === "setup" && kind ? { ...base, label: SETUP_LABEL[kind], cls: kind === "offline" ? "bg-down" : base.cls } : base;
   return (
     <span className="inline-flex items-center gap-1.5 text-xs text-muted-foreground" title={lastAt ? `Last update ${new Date(lastAt).toLocaleTimeString()}` : undefined}>
       <span className={cn("h-1.5 w-1.5 rounded-full", s.cls)} />
