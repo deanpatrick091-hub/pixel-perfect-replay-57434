@@ -195,8 +195,8 @@ export function PriceChart({ marketId, quoteCcy, tick, liveTrades, headerPrice =
   const streaming = h?.live?.state === "streaming";
   const complete = h?.coverage === "complete";
   const status = ((): { tone: Tone; text: string; retry?: boolean } => {
-    if (hist.latest?.candles.length) return { tone: "warn", text: `Market service returned less history (${hist.latest.swaps} swaps, likely restarted and reloading) · showing the previous snapshot of ${h?.swaps ?? 0} verified swaps until it catches up or a newer swap arrives` };
-    if (hist.latest) return { tone: "warn", text: `${hist.latest.error ?? `Latest attempt: ${hist.latest.state}`} · retaining ${h?.swaps ?? 0} verified swaps`, retry: true };
+    if (hist.latest?.candles.length) return { tone: "warn", text: `Market service returned less history (${hist.latest.swaps} swaps, likely restarted and reloading) · showing the previous snapshot of ${h?.swaps ?? 0} swaps${h?.provisionalSwaps ? ` (${h.provisionalSwaps} still unverified)` : ""} until it catches up or a newer swap arrives` };
+    if (hist.latest) return { tone: "warn", text: `${hist.latest.error ?? `Latest attempt: ${hist.latest.state}`} · retaining ${h?.swaps ?? 0} swaps${h?.provisionalSwaps ? ` (${h.provisionalSwaps} still unverified)` : ""}`, retry: true };
     if (useLive) return { tone: "live", text: `Swaps streamed by PumpPortal · ${list.reduce((n, c) => n + c.buys + c.sells, 0)} swaps` };
     if (!h) return hist.netErr ? { tone: "bad", text: "Market service unreachable · retrying", retry: true } : { tone: "ok", text: "Loading on-chain history…" };
     if (historyOff) return { tone: "warn", text: h.error ?? "On-chain chart history isn't available for this market" };
@@ -228,7 +228,7 @@ export function PriceChart({ marketId, quoteCcy, tick, liveTrades, headerPrice =
     out.push(streaming
       ? `Delivery: Solana logsSubscribe for this market address plus polled catch-up.${h.live?.logSwaps ? ` PumpSwap swaps are charted straight from the notification's program logs (only events logged by PumpSwap itself for this exact pool), then re-checked against the full transaction: ${h.live.logConfirmed ?? 0} confirmed, ${h.live.logMismatch ?? 0} differed${h.live.logExpired ? `, ${h.live.logExpired} removed because their transaction could not be verified` : ""}${h.provisionalSwaps ? `, ${h.provisionalSwaps} awaiting check` : ""}. A provisional swap's time can move by about a second once confirmed.` : " Each swap is fetched and validated before charting."}${h.live?.hintToChartMs != null ? ` Last live swap charted ${(h.live.hintToChartMs / 1000).toFixed(1)}s after its notification (${((h.live.chainToChartMs ?? 0) / 1000).toFixed(1)}s after its on-chain time)${h.live.hintToChartMedianMs != null ? `; median ${(h.live.hintToChartMedianMs / 1000).toFixed(1)}s` : ""}.` : ""} Every confirmed swap isn't guaranteed to arrive live; the polled catch-up fills misses.`
       : `Delivery: polled history (not tick streaming)${h.live?.state && h.live.state !== "off" ? ` — live stream ${h.live.state}${h.live.error ? ` (${h.live.error})` : ""}` : ""}. New swaps can take several seconds to appear.`);
-    if (h.oldestTs && h.newestTs) out.push(`Range: verified swaps from ${new Date(h.oldestTs * 1000).toISOString()} to ${new Date(h.newestTs * 1000).toISOString()}.`);
+    if (h.oldestTs && h.newestTs) out.push(`Range: ${h.provisionalSwaps ? `swaps (${h.provisionalSwaps} unverified, from logs)` : "verified swaps"} from ${new Date(h.oldestTs * 1000).toISOString()} to ${new Date(h.newestTs * 1000).toISOString()}.`);
     const b = h.backfill;
     if (b) out.push(b.state === "in_progress" ? `Older history: loading (${b.listedSignatures} of max ${b.maxSignatures} transactions listed).`
       : b.state === "done_start" ? "Older history: complete back to the market address's first transaction."
@@ -248,8 +248,8 @@ export function PriceChart({ marketId, quoteCcy, tick, liveTrades, headerPrice =
     if (h.lastRateLimitAt) out.push(`Last rate limit: ${clock(h.lastRateLimitAt)}.`);
     out.push(`Last RPC contact ${clock(h.lastSuccessAt)}${h.completedAt ? ` · coverage complete ${clock(h.completedAt)}` : ""}.`);
     const cmp = headerComparison(list, headerPrice, headerAt);
-    if (cmp) out.push(`Same-unit check (${quoteCcy} per token): page header ${fmtPriceSig(cmp.header, 4)} (${headerSource ?? "pool state"}, ${cmp.headerAtMs ? `fetched ${clock(cmp.headerAtMs)}` : "time unknown"}) vs last verified swap close ${fmtPriceSig(cmp.close, 4)} (${clock(cmp.closeT * 1000)}): ${cmp.pct >= 0 ? "+" : ""}${cmp.pct.toFixed(2)}%. Different sources and moments, so small differences are expected; the header's USD price is its ${quoteCcy} price × the SOL/USD reference.`);
-    out.push(`Prices are SOL per token from verified swaps. Market cap / USD view is not offered: it would need a verified historical SOL/USD rate for every candle, which this chart doesn't have.`);
+    if (cmp) out.push(`Same-unit check (${quoteCcy} per token): page header ${fmtPriceSig(cmp.header, 4)} (${headerSource ?? "pool state"}, ${cmp.headerAtMs ? `fetched ${clock(cmp.headerAtMs)}` : "time unknown"}) vs last ${h.provisionalSwaps ? "charted" : "verified"} swap close ${fmtPriceSig(cmp.close, 4)} (${clock(cmp.closeT * 1000)}): ${cmp.pct >= 0 ? "+" : ""}${cmp.pct.toFixed(2)}%. Different sources and moments, so small differences are expected; the header's USD price is its ${quoteCcy} price × the SOL/USD reference.`);
+    out.push(`Prices are SOL per token from verified swaps${h.provisionalSwaps ? " plus unverified log-decoded swaps awaiting their transaction check" : ""}. Market cap / USD view is not offered: it would need a verified historical SOL/USD rate for every candle, which this chart doesn't have.`);
     out.push("Each candle aggregates verified swaps in its interval. Blank slots have no invented OHLC or volume. Volume bars are positive: bar height is total verified volume, the green part is buy volume and the red remainder is sell volume, from verified swap direction, not candle colour. Missing coverage is not proof an interval had no swaps.");
     return out;
   })();
