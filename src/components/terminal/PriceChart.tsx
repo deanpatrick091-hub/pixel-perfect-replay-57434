@@ -90,11 +90,11 @@ export function PriceChart({ marketId, quoteCcy, tick, liveTrades, headerPrice =
         priceFormat: { type: "custom", formatter: (p: number) => fmtPriceSig(p, digits.current), minMove: 1e-12 },
       });
       chart.applyOptions({ layout: { panes: { separatorColor: border, separatorHoverColor: border + "66", enableResize: true } } });
-      // Separate volume pane: verified buy volume above zero, sell volume below zero.
+      // Separate volume pane, all bars positive: full bar = total verified volume (sell colour), overlaid green part = verified buy volume.
       const volFmt = (v: number) => { const x = Math.abs(v); return x < 1e-9 ? "0" : x >= 1000 ? `${(x / 1000).toFixed(1)}K` : x >= 1 ? x.toFixed(2) : x.toPrecision(2); };
       const volumeOptions = { priceFormat: { type: "custom" as const, formatter: volFmt, minMove: 1e-9 }, lastValueVisible: false, priceLineVisible: false };
-      const buyVolume = chart.addSeries(lc.HistogramSeries, { ...volumeOptions, color: up + "b3" }, 1);
       const sellVolume = chart.addSeries(lc.HistogramSeries, { ...volumeOptions, color: down + "b3" }, 1);
+      const buyVolume = chart.addSeries(lc.HistogramSeries, { ...volumeOptions, color: up + "b3" }, 1);
       chart.panes()[0]?.setStretchFactor(3);
       chart.panes()[1]?.setStretchFactor(1);
       chart.subscribeCrosshairMove((p: any) => setHover(typeof p?.time === "number" ? p.time : null));
@@ -156,7 +156,7 @@ export function PriceChart({ marketId, quoteCcy, tick, liveTrades, headerPrice =
       return { time: c.t, open: c.o, high: c.h, low: c.l, close: c.c, color: col, borderColor: col, wickColor: col };
     };
     const vol = (c: ChartRow, side: "buyVolume" | "sellVolume") => isCandle(c) && c[side] != null
-      ? ({ time: c.t, value: (c[side] ?? 0) * (side === "sellVolume" ? -1 : 1) }) : ({ time: c.t });
+      ? ({ time: c.t, value: side === "sellVolume" ? (c.buyVolume ?? 0) + (c.sellVolume ?? 0) : (c.buyVolume ?? 0) }) : ({ time: c.t });
     if (digits.current !== precision.sig || !shown.current) {
       digits.current = precision.sig;
       a.candles.applyOptions({ priceFormat: { type: "custom", formatter: (p: number) => fmtPriceSig(p, digits.current), minMove: precision.minMove } });
@@ -249,7 +249,7 @@ export function PriceChart({ marketId, quoteCcy, tick, liveTrades, headerPrice =
     const cmp = headerComparison(list, headerPrice, headerAt);
     if (cmp) out.push(`Same-unit check (${quoteCcy} per token): page header ${fmtPriceSig(cmp.header, 4)} (${headerSource ?? "pool state"}, ${cmp.headerAtMs ? `fetched ${clock(cmp.headerAtMs)}` : "time unknown"}) vs last verified swap close ${fmtPriceSig(cmp.close, 4)} (${clock(cmp.closeT * 1000)}): ${cmp.pct >= 0 ? "+" : ""}${cmp.pct.toFixed(2)}%. Different sources and moments, so small differences are expected; the header's USD price is its ${quoteCcy} price × the SOL/USD reference.`);
     out.push(`Prices are SOL per token from verified swaps. Market cap / USD view is not offered: it would need a verified historical SOL/USD rate for every candle, which this chart doesn't have.`);
-    out.push("Each candle aggregates verified swaps in its interval. Blank slots have no invented OHLC or volume. Buy volume above zero and sell volume below zero use verified swap direction, not candle colour. Missing coverage is not proof an interval had no swaps.");
+    out.push("Each candle aggregates verified swaps in its interval. Blank slots have no invented OHLC or volume. Volume bars are positive: bar height is total verified volume, the green part is buy volume and the red remainder is sell volume, from verified swap direction, not candle colour. Missing coverage is not proof an interval had no swaps.");
     return out;
   })();
 
