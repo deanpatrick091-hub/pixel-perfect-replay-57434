@@ -56,3 +56,36 @@ test("batched pool lookup: one request for up to 30 pools, each keeps the batch 
   assert.equal(calls, 2); assert.equal(got.size, 31); assert.equal(got.get("Pool0")!.at, 5);
   t = 6; await c.pairsAt(pools); assert.equal(calls, 2, "fresh per-pool cache, no refetch");
 });
+
+test("Retry-After: seconds and HTTP-date parsed; a long server value is never shortened", async () => {
+  const { parseRetryAfter } = await import("../src/dexscreener.ts");
+  const base = Date.parse("2026-11-16T20:00:00Z");
+  assert.equal(parseRetryAfter("600", base), 600_000);
+  assert.equal(parseRetryAfter("Mon, 16 Nov 2026 20:10:00 GMT", base), 600_000);
+  assert.equal(parseRetryAfter("Mon, 16 Nov 2026 19:00:00 GMT", base), null);
+  assert.equal(parseRetryAfter("soon", base), null); assert.equal(parseRetryAfter("-5", base), null); assert.equal(parseRetryAfter(null, base), null);
+  for (const header of ["600", new Date(600_000).toUTCString()]) {
+    let t = 0, calls = 0;
+    const c = createDexClient({ now: () => t, fetch: (async () => { calls++; return res(429, {}, { "retry-after": header }); }) as any });
+    await c.getAt("u/a");
+    t = 300_001; await c.getAt("u/b"); assert.equal(calls, 1, `${header}: not retried at the 300s local cap`);
+    t = 599_999; await c.getAt("u/b"); assert.equal(calls, 1);
+    t = 600_000; await c.getAt("u/b"); assert.equal(calls, 2);
+  }
+});
+
+const hang = (signal?: AbortSignal) => new Promise<never>((_, rej) => signal?.addEventListener("abort", () => rej(Object.assign(new Error("aborted"), { name: "AbortError" }))));
+test("a hung request or hung body read times out and releases its concurrency slot", async () => {
+  let n = 0;
+  const c = createDexClient({ timeoutMs: 20, maxConcurrent: 1, burst: 10, fetch: (async (_u: string, init: RequestInit) => {
+    n++;
+    if (n === 1) return hang(init.signal!);
+    if (n === 2) return { ...res(200), json: () => hang(init.signal!) } as unknown as Response;
+    return res(200, { ok: 1 });
+  }) as any });
+  assert.equal(await c.getAt("u/1"), null);
+  assert.equal(await c.getAt("u/2"), null);
+  const ok = await c.getAt("u/3");
+  assert.deepEqual(ok?.data, { ok: 1 }, "slot was released after both timeouts");
+  assert.equal(c.stats.timeouts, 2);
+});

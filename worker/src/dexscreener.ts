@@ -6,9 +6,19 @@ import { log } from "./log.ts";
 // that honours Retry-After. During cooldown nothing is sent; callers get the cached body with its old time.
 const TTL_MS = 15_000;
 export const DEX_RATE_PER_MIN = 200, DEX_BURST = 8, DEX_MAX_CONCURRENT = 3, DEX_BATCH = 30;
-const COOLDOWN_BASE_MS = 30_000, COOLDOWN_MAX_MS = 300_000;
+const COOLDOWN_BASE_MS = 30_000, COOLDOWN_MAX_MS = 300_000; // cap applies only to our own exponential backoff
+export const DEX_TIMEOUT_MS = 10_000; // whole request incl. body; a hung call must release its slot
 
-export interface DexClientOptions { fetch?: typeof fetch; now?: () => number; ratePerMin?: number; burst?: number; maxConcurrent?: number }
+/** Retry-After as delta-seconds or HTTP-date (RFC 9110). Returns ms from `now`, or null when absent/invalid. */
+export function parseRetryAfter(v: string | null, now: number): number | null {
+  if (!v) return null;
+  const t = v.trim();
+  if (/^\d+$/.test(t)) { const n = Number(t); return n > 0 ? n * 1000 : null; }
+  const d = Date.parse(t);
+  return Number.isFinite(d) && d > now ? d - now : null;
+}
+
+export interface DexClientOptions { fetch?: typeof fetch; timeoutMs?: number; now?: () => number; ratePerMin?: number; burst?: number; maxConcurrent?: number }
 type Entry = { at: number; data: any };
 
 export function createDexClient(o: DexClientOptions = {}) {
@@ -18,7 +28,7 @@ export function createDexClient(o: DexClientOptions = {}) {
   const cache = new Map<string, Entry>();
   const inflight = new Map<string, Promise<Entry | null>>();
   let tokens = burst, refilledAt = now(), active = 0, cooldownUntil = 0, strikes = 0;
-  const stats = { requests: 0, errors: 0, lastSuccessAt: 0, rateLimited: 0, http429: 0, deduped: 0, skippedBudget: 0, skippedCooldown: 0, skippedBusy: 0, cooldownUntil: 0, lastRetryAfterSec: null as number | null };
+  const stats = { requests: 0, errors: 0, lastSuccessAt: 0, rateLimited: 0, http429: 0, deduped: 0, skippedBudget: 0, skippedCooldown: 0, skippedBusy: 0, timeouts: 0, cooldownUntil: 0, lastRetryAfterSec: null as number | null };
 
   function take(): "ok" | "cooldown" | "budget" | "busy" {
     const t = now();
@@ -43,12 +53,16 @@ export function createDexClient(o: DexClientOptions = {}) {
     const p = (async (): Promise<Entry | null> => {
       active++; stats.requests++;
       try {
-        const r = await doFetch(url, { headers: { accept: "application/json" } });
+        const ctrl = new AbortController();
+        const timer = setTimeout(() => ctrl.abort(), o.timeoutMs ?? DEX_TIMEOUT_MS);
+        try {
+        const r = await doFetch(url, { headers: { accept: "application/json" }, signal: ctrl.signal });
         if (r.status === 429) {
           stats.http429++; stats.errors++; strikes++;
-          const ra = Number(r.headers.get("retry-after"));
-          const wait = Number.isFinite(ra) && ra > 0 ? Math.min(ra * 1000, COOLDOWN_MAX_MS) : Math.min(COOLDOWN_BASE_MS * 2 ** (strikes - 1), COOLDOWN_MAX_MS);
-          stats.lastRetryAfterSec = Number.isFinite(ra) && ra > 0 ? ra : null;
+          const ra = parseRetryAfter(r.headers.get("retry-after"), now());
+          // A valid server instruction is never shortened; only our own backoff is capped.
+          const wait = ra ?? Math.min(COOLDOWN_BASE_MS * 2 ** (strikes - 1), COOLDOWN_MAX_MS);
+          stats.lastRetryAfterSec = ra != null ? Math.ceil(ra / 1000) : null;
           cooldownUntil = Math.max(cooldownUntil, now() + wait); stats.cooldownUntil = cooldownUntil; tokens = 0;
           log("warn", "dexscreener rate limited; global cooldown", { waitMs: wait, retryAfter: stats.lastRetryAfterSec });
           return null;
@@ -57,7 +71,8 @@ export function createDexClient(o: DexClientOptions = {}) {
         const entry = { at: now(), data: await r.json() };
         cache.set(url, entry); strikes = 0; stats.lastSuccessAt = entry.at;
         return entry;
-      } catch { stats.errors++; return null; }
+        } finally { clearTimeout(timer); }
+      } catch (e) { stats.errors++; if ((e as Error)?.name === "AbortError") { stats.timeouts++; log("warn", "dexscreener timeout", { url }); } return null; }
       finally { active--; inflight.delete(url); }
     })();
     inflight.set(url, p);
