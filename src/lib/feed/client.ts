@@ -20,6 +20,10 @@ class FeedClient {
   seq = 0;
   gapNotice: string | null = null;
   setupReason = "Checking for the live market service…";
+  /** Why the feed isn't live: never seen, heartbeat stopped, misconfigured, status unreadable, or socket unreachable. */
+  setupKind: "never" | "offline" | "no_url" | "read_error" | "unreachable" | null = null;
+  lastCheckAt: number | null = null;
+  private wsFailures = 0;
   version = 0;
 
   private ws: WebSocket | null = null;
@@ -59,46 +63,52 @@ class FeedClient {
     }, 2000);
   }
 
+  /** User-triggered re-check: re-read the heartbeat and reconnect immediately. */
+  retry = () => {
+    this.status = "checking"; this.setupReason = "Checking for the live market service…"; this.notify();
+    this.backoff = 1000; this.wsFailures = 0;
+    if (this.workerUrl && !this.ws) this.connect();
+    void this.discover();
+  };
+
+  private setup(kind: NonNullable<FeedClient["setupKind"]>, reason: string) {
+    this.status = "setup"; this.setupKind = kind; this.setupReason = reason;
+  }
+
   private async discover() {
-    const { data, error } = await supabase
-      .from("worker_status")
-      .select("public_url,last_heartbeat_at,coverage,status")
-      .order("last_heartbeat_at", { ascending: false })
-      .limit(1)
-      .maybeSingle();
+    // Security-definer lookup: latest heartbeat time/status/URL only, so a long-dead worker reads as "offline since", not "never".
+    const { data: rows, error } = await supabase.rpc("worker_service_status");
+    this.lastCheckAt = Date.now();
+    const data = rows?.[0] ?? null;
     if (error) {
-      if (this.status === "checking") { this.status = "setup"; this.setupReason = "Could not read market service status."; this.notify(); }
+      if (this.status !== "connected" && this.status !== "stale") this.setup("read_error", "Could not read the market service's status. Retrying every 15 seconds.");
+      this.notify();
       return;
     }
-    const hb = data ? new Date(data.last_heartbeat_at).getTime() : null;
+    const hb = data?.last_heartbeat_at ? new Date(data.last_heartbeat_at).getTime() : null;
     this.lastHeartbeatAt = hb;
-    this.coverage = (data?.coverage as Record<string, Record<string, string>>) ?? {};
     const alive = hb != null && Date.now() - hb < HEARTBEAT_MAX_AGE_MS;
-    if (!data) {
-      this.status = "setup";
-      this.setupReason = "The live market service has not connected yet. Deploy the worker to start streaming launches.";
-    } else if (!data.public_url) {
-      this.status = "setup";
-      this.setupReason = "The market service is sending data but has no PUBLIC_URL set, so the browser cannot stream from it.";
-    } else if (!alive && !this.ws) {
-      this.status = "setup";
-      this.setupReason = `The market service last checked in ${Math.round((Date.now() - hb!) / 1000)}s ago and looks offline.`;
-    }
-    if (data?.public_url && (alive || this.ws) && data.public_url !== this.workerUrl) {
-      this.workerUrl = data.public_url.replace(/\/$/, "");
-      this.connect();
+    if (!data || hb == null) this.setup("never", "The live market service has never checked in. It must be deployed and running before launches can stream.");
+    else if (!data.public_url) this.setup("no_url", "The market service is checking in but has no PUBLIC_URL set, so the browser cannot stream from it.");
+    else if (!alive && !this.ws) this.setup("offline", `The market service last checked in ${new Date(hb).toLocaleString()} and is offline. Its host must be running again before live data returns.`);
+    else if (this.status === "setup" && this.setupKind !== "unreachable") { this.status = "checking"; this.setupKind = null; }
+    if (data?.public_url && alive) {
+      const url = data.public_url.replace(/\/$/, "");
+      const changed = url !== this.workerUrl;
+      this.workerUrl = url;
+      if (changed || (!this.ws && this.setupKind !== "unreachable")) this.connect();
     }
     this.notify();
   }
 
   private connect() {
     if (!this.workerUrl) return;
-    this.ws?.close();
-    this.status = this.everConnected ? "reconnecting" : "connecting";
+    if (this.ws) { const old = this.ws; this.ws = null; old.close(); }
+    if (this.status !== "setup") this.status = this.everConnected ? "reconnecting" : "connecting";
     const ws = new WebSocket(this.workerUrl.replace(/^http/, "ws") + "/ws");
     this.ws = ws;
     ws.onopen = async () => {
-      this.backoff = 1000;
+      this.backoff = 1000; this.wsFailures = 0; this.setupKind = null;
       const wasConnected = this.everConnected;
       this.everConnected = true;
       this.status = "connected";
@@ -136,8 +146,13 @@ class FeedClient {
     ws.onclose = () => {
       if (this.ws !== ws) return;
       this.ws = null;
-      this.status = "reconnecting";
+      this.wsFailures++;
+      // Heartbeat says alive but the socket never opens: likely PUBLIC_URL/ALLOWED_ORIGINS, not a dead host.
+      if (!this.everConnected && this.wsFailures >= 3) this.setup("unreachable", `The market service checks in, but this browser can't open its live connection (${this.workerUrl}). Check its PUBLIC_URL and that ALLOWED_ORIGINS includes ${location.origin}.`);
+      else if (this.status !== "setup") this.status = "reconnecting";
       this.notify();
+      const alive = this.lastHeartbeatAt != null && Date.now() - this.lastHeartbeatAt < HEARTBEAT_MAX_AGE_MS;
+      if (!alive) { this.setup("offline", `The market service stopped responding${this.lastHeartbeatAt ? ` (last check-in ${new Date(this.lastHeartbeatAt).toLocaleString()})` : ""}.`); this.notify(); return; }
       const wait = Math.min(this.backoff, 20_000);
       this.backoff *= 2;
       setTimeout(() => this.connect(), wait);

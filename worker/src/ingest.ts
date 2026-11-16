@@ -4,7 +4,7 @@ import { solUsd } from "./solusd.ts";
 import type { Market, Store } from "./store.ts";
 
 // Pushes executable state to the website's ingest endpoint (which writes the paper-trading DB).
-export const ingestStats = { pushes: 0, failures: 0, lastOkAt: 0 as number, lastError: null as string | null };
+export const ingestStats = { pushes: 0, failures: 0, lastOkAt: 0 as number, lastError: null as string | null, rejected: 0 };
 
 const toRow = (m: Market) => ({
   id: m.id, chain: m.chain, kind: m.kind, address: m.address, mint: m.mint, venue: m.venue, quote_ccy: m.quoteCcy,
@@ -30,6 +30,9 @@ export async function push(store: Store, heartbeat?: Record<string, unknown>) {
       body: JSON.stringify({ markets, reference_prices, heartbeat }),
     });
     if (!r.ok) throw new Error(`${r.status} ${(await r.text()).slice(0, 300)}`);
+    const j = (await r.json().catch(() => ({}))) as { rejected?: { id: string; reason: string }[] };
+    // Rows the site permanently rejects (e.g. address owned by another market id) are not retried forever.
+    if (j.rejected?.length) { ingestStats.rejected += j.rejected.length; log("warn", "ingest rejected markets", { rejected: j.rejected.slice(0, 5) }); }
     ingestStats.pushes++;
     ingestStats.lastOkAt = Date.now();
     ingestStats.lastError = null;

@@ -43,6 +43,7 @@ export function PriceChart({ marketId, quoteCcy, tick, liveTrades }: { marketId:
   const [details, setDetails] = useState(false);
   const [now, setNow] = useState(() => Date.now());
   const [live, setLive] = useState<{ candles: Candle[]; note: string } | null>(null);
+  const [hover, setHover] = useState<number | null>(null);
   const shown = useRef<{ key: string; list: ChartRow[] } | null>(null);
 
   useEffect(() => { const t = setInterval(() => setNow(Date.now()), 1000); return () => clearInterval(t); }, []);
@@ -61,14 +62,20 @@ export function PriceChart({ marketId, quoteCcy, tick, liveTrades }: { marketId:
       if (disposed || !el.current) return;
       const fg = cssVar("--muted-foreground");
       const border = cssVar("--border");
+      const surface = cssVar("--surface-2");
       const chart = lc.createChart(el.current, {
         autoSize: true,
         layout: { background: { color: "transparent" }, textColor: fg, fontFamily: "JetBrains Mono, monospace", fontSize: 11 },
-        grid: { vertLines: { color: border + "66" }, horzLines: { color: border + "66" } },
-        rightPriceScale: { borderColor: border },
+        // Subtle terminal grid; the volume pane is separated by a thin divider.
+        grid: { vertLines: { color: border + "26" }, horzLines: { color: border + "40" } },
+        rightPriceScale: { borderColor: border, scaleMargins: { top: 0.12, bottom: 0.08 } },
         // Fixed narrow bars, latest candle right-aligned; sparse data never stretches across the screen.
         timeScale: { borderColor: border, timeVisible: true, secondsVisible: true, barSpacing: BAR_SPACING, minBarSpacing: 0.5, rightOffset: RIGHT_OFFSET, shiftVisibleRangeOnNewBar: true },
-        crosshair: { mode: lc.CrosshairMode.Normal },
+        crosshair: {
+          mode: lc.CrosshairMode.Normal,
+          vertLine: { color: fg + "99", width: 1, style: lc.LineStyle.Dashed, labelBackgroundColor: surface },
+          horzLine: { color: fg + "99", width: 1, style: lc.LineStyle.Dashed, labelBackgroundColor: surface },
+        },
         localization: { priceFormatter: (p: number) => fmtPrice(p, "") },
       });
       const up = cssVar("--up"), down = cssVar("--down");
@@ -77,10 +84,15 @@ export function PriceChart({ marketId, quoteCcy, tick, liveTrades }: { marketId:
         upColor: up, downColor: down, borderUpColor: up, borderDownColor: down, wickUpColor: up, wickDownColor: down,
         priceFormat: { type: "custom", formatter: (p: number) => fmtPrice(p, ""), minMove: 1e-12 },
       });
-      const volumeOptions = { priceScaleId: "vol", priceFormat: { type: "volume" as const }, lastValueVisible: false, priceLineVisible: false };
-      const buyVolume = chart.addSeries(lc.HistogramSeries, { ...volumeOptions, color: up + "aa" });
-      const sellVolume = chart.addSeries(lc.HistogramSeries, { ...volumeOptions, color: down + "aa" });
-      chart.priceScale("vol").applyOptions({ scaleMargins: { top: 0.82, bottom: 0 } });
+      chart.applyOptions({ layout: { panes: { separatorColor: border, separatorHoverColor: border + "66", enableResize: true } } });
+      // Separate volume pane: verified buy volume above zero, sell volume below zero.
+      const volFmt = (v: number) => { const x = Math.abs(v); return x < 1e-9 ? "0" : x >= 1000 ? `${(x / 1000).toFixed(1)}K` : x >= 1 ? x.toFixed(2) : x.toPrecision(2); };
+      const volumeOptions = { priceFormat: { type: "custom" as const, formatter: volFmt, minMove: 1e-9 }, lastValueVisible: false, priceLineVisible: false };
+      const buyVolume = chart.addSeries(lc.HistogramSeries, { ...volumeOptions, color: up + "b3" }, 1);
+      const sellVolume = chart.addSeries(lc.HistogramSeries, { ...volumeOptions, color: down + "b3" }, 1);
+      chart.panes()[0]?.setStretchFactor(3);
+      chart.panes()[1]?.setStretchFactor(1);
+      chart.subscribeCrosshairMove((p: any) => setHover(typeof p?.time === "number" ? p.time : null));
       api.current = { chart, candles, buyVolume, sellVolume, up, down };
       setReady(true);
     }).catch(() => { if (!disposed) setChartError(true); });
@@ -108,6 +120,13 @@ export function PriceChart({ marketId, quoteCcy, tick, liveTrades }: { marketId:
   const expanded = useMemo(() => chartRows(list, INTERVALS[tf] ?? 60), [list, tf]);
   const pressure = useMemo(() => list.length && list.every((c) => c.buyVolume != null && c.sellVolume != null)
     ? list.reduce((p, c) => ({ buy: p.buy + (c.buyVolume ?? 0), sell: p.sell + (c.sellVolume ?? 0) }), { buy: 0, sell: 0 }) : null, [list]);
+
+  // OHLCV readout: hovered candle, else the latest real candle (blank whitespace slots show "no swaps").
+  const legend = useMemo(() => {
+    if (!list.length) return null;
+    const c = hover != null ? list.find((x) => x.t === hover) ?? null : list[list.length - 1]!;
+    return { t: hover ?? list[list.length - 1]!.t, c };
+  }, [hover, list]);
 
   const resetView = useCallback((n: number, fit = false) => {
     const a = api.current;
@@ -223,10 +242,11 @@ export function PriceChart({ marketId, quoteCcy, tick, liveTrades }: { marketId:
               {t}
             </Button>
           ))}
-          <Button variant="ghost" size="xs" onClick={fit} className="ml-1 shrink-0 text-[11px] text-muted-foreground" aria-label="Fit candles">Fit</Button>
-          <Button variant="ghost" size="xs" onClick={latest} className="shrink-0 text-[11px] text-muted-foreground" aria-label="Jump to latest candle">Latest</Button>
         </div>
-        <span className="hidden shrink-0 whitespace-nowrap text-[11px] text-muted-foreground md:inline">Price in {quoteCcy}</span>
+        <div className="flex shrink-0 items-center gap-0.5 border-l border-border pl-1">
+          <Button variant="ghost" size="xs" onClick={fit} className="text-[11px] text-muted-foreground" aria-label="Fit candles">Fit</Button>
+          <Button variant="ghost" size="xs" onClick={latest} className="text-[11px] text-muted-foreground" aria-label="Jump to latest candle">Latest</Button>
+        </div>
       </div>
       <div className="flex min-w-0 items-center gap-2 border-b border-border px-2 py-1 text-[11px] text-muted-foreground" role="status">
         <span className={cn("h-1.5 w-1.5 shrink-0 rounded-full", dot, status.tone === "live" && "animate-pulse")} aria-hidden />
@@ -248,11 +268,36 @@ export function PriceChart({ marketId, quoteCcy, tick, liveTrades }: { marketId:
       )}
       <div className="relative min-h-[260px] flex-1">
         <div ref={el} className="absolute inset-0" />
+        {legend && <Legend t={legend.t} c={legend.c} tf={tf} quoteCcy={quoteCcy} />}
         {chartError && <div role="alert" className="p-6 text-center text-xs text-muted-foreground">Chart failed to load. Refresh to try again.</div>}
         {emptyMsg && (
           <div className="pointer-events-none absolute inset-0 grid place-items-center p-6 text-center text-xs text-muted-foreground"><div>{emptyMsg}</div></div>
         )}
       </div>
+    </div>
+  );
+}
+
+function Legend({ t, c, tf, quoteCcy }: { t: number; c: Candle | null; tf: string; quoteCcy: string }) {
+  const time = new Date(t * 1000).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", second: tf.endsWith("s") ? "2-digit" : undefined });
+  const tone = c ? (c.c >= c.o ? "text-up" : "text-down") : "text-muted-foreground";
+  const chg = c && c.o ? ((c.c - c.o) / c.o) * 100 : null;
+  const f = (p: number) => fmtPrice(p, "");
+  return (
+    <div className="num pointer-events-none absolute left-2 top-1.5 z-10 flex max-w-[calc(100%-5rem)] flex-wrap gap-x-2 gap-y-0 rounded bg-background/70 px-1.5 py-0.5 text-[10.5px] leading-4 backdrop-blur-sm" aria-live="off">
+      <span className="text-muted-foreground">{tf} · {quoteCcy} · {time}</span>
+      {c ? (
+        <>
+          <span><span className="text-muted-foreground">O</span> <span className={tone}>{f(c.o)}</span></span>
+          <span><span className="text-muted-foreground">H</span> <span className={tone}>{f(c.h)}</span></span>
+          <span><span className="text-muted-foreground">L</span> <span className={tone}>{f(c.l)}</span></span>
+          <span><span className="text-muted-foreground">C</span> <span className={tone}>{f(c.c)}</span></span>
+          {chg != null && <span className={tone}>{chg >= 0 ? "+" : ""}{chg.toFixed(2)}%</span>}
+          <span><span className="text-muted-foreground">Vol</span> {c.v.toFixed(3)}</span>
+          {c.buyVolume != null && c.sellVolume != null && <span><span className="text-up">B {c.buyVolume.toFixed(3)}</span> <span className="text-down">S {c.sellVolume.toFixed(3)}</span></span>}
+          <span className="text-muted-foreground">{c.buys + c.sells} swaps</span>
+        </>
+      ) : <span className="text-muted-foreground">no verified swaps recorded in this interval</span>}
     </div>
   );
 }

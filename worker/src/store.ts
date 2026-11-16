@@ -70,6 +70,12 @@ export class Store extends EventEmitter {
     return this.markets.has(m.id);
   }
 
+  /** Any tracked market (curve or pool) already using this on-chain address. */
+  byAddress(address: string) {
+    for (const m of this.markets.values()) if (m.address === address) return m;
+    return null;
+  }
+
   addAmm(m: Market) {
     this.markets.set(m.id, m);
     this.byMint.set(m.mint, [...(this.byMint.get(m.mint) ?? []).filter((x) => x !== m.id), m.id]);

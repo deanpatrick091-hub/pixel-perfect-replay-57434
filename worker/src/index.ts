@@ -8,6 +8,7 @@ import { pair, tokenPairs, dexStats } from "./dexscreener.ts";
 import { push, ingestStats } from "./ingest.ts";
 import { historyStats } from "./history/index.ts";
 import { restoreMarkets } from "./restore.ts";
+import { pickDestination } from "./destination.ts";
 
 const store = new Store();
 const pump = new PumpPortalAdapter();
@@ -75,8 +76,7 @@ async function resolveImage(m: Market) {
 async function resolveDestination(curve: Market, attempt = 0) {
   const delays = [5_000, 20_000, 60_000, 180_000, 600_000];
   const pairs = await tokenPairs(curve.mint);
-  const p = pairs.filter((x) => x.chainId === "solana" && x.baseToken?.address === curve.mint && x.quoteToken?.symbol?.toUpperCase().includes("SOL"))
-    .sort((a, b) => (a.dexId === "pumpswap" ? -1 : 0) - (b.dexId === "pumpswap" ? -1 : 0) || (b.liquidity?.usd ?? 0) - (a.liquidity?.usd ?? 0))[0];
+  const p = pickDestination(pairs, curve, (a) => !!store.byAddress(a));
   if (!p) {
     if (attempt < delays.length) setTimeout(() => resolveDestination(curve, attempt + 1), delays[attempt]);
     else log("warn", "destination pool not found", { mint: curve.mint });

@@ -492,6 +492,15 @@ export type Database = {
         Returns: Json
       }
       reset_paper_account: { Args: never; Returns: Json }
+      worker_service_status: {
+        Args: never
+        Returns: {
+          id: string
+          last_heartbeat_at: string
+          public_url: string
+          status: string
+        }[]
+      }
     }
     Enums: {
       [_ in never]: never

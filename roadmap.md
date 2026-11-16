@@ -6,6 +6,7 @@
 - [x] Chart reliability: RPC budget/retries, free live trade hints, bounded backfill, narrow candles, mobile chart (worker redeploy needed)
 - [x] Verified exact-pool PumpSwap history, free live hints, regression tests and real-pool verification (worker redeploy needed)
 - [x] Chart follow-up: bounded time gaps, verified buy/sell volume, regression tests and local real-pool browser verification
-- [ ] Worker ingest rejects some market batches (duplicate chain+address) — investigate separately
+- [x] Worker ingest duplicate chain+address: curve's own DEX Screener listing no longer chosen as a pool; conflicting rows rejected individually
+- [x] Discover offline/never/misconfigured status with Retry; chart volume pane, OHLCV readout, polished controls
 - [ ] Phase 2: limit orders, migration order handling, Explore, Bubbles, watchlist, settings
 - [ ] Phase 3: CoinGecko history, gap recovery, more adapters, full verification run

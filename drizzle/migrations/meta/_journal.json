@@ -22,6 +22,13 @@
       "when": 1794819962520,
       "tag": "0002_tighten_public_config_status_policies",
       "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1794842561992,
+      "tag": "0003_worker_service_heartbeat",
+      "breakpoints": true
     }
   ]
 }

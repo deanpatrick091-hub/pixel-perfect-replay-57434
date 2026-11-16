@@ -90,12 +90,38 @@ export const Route = createFileRoute("/api/public/worker-ingest")({
         const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
         const now = new Date().toISOString();
         const errors: string[] = [];
+        const rejected: { id: string; reason: string }[] = [];
 
-        if (body.markets.length) {
-          const { error } = await supabaseAdmin
-            .from("markets")
-            .upsert(body.markets.map((m) => ({ ...m, updated_at: now })) as never, { onConflict: "id" });
-          if (error) errors.push(`markets: ${error.message}`);
+        // Dedupe by id (last wins) and reject rows whose chain+address already belongs to a different market id,
+        // so one conflicting row can't fail the whole batch and be retried forever.
+        const byId = new Map(body.markets.map((m) => [m.id, m]));
+        const seenAddr = new Map<string, string>();
+        let rows = [...byId.values()].filter((m) => {
+          const k = `${m.chain}:${m.address}`, other = seenAddr.get(k);
+          if (other && other !== m.id) { rejected.push({ id: m.id, reason: `address also sent as ${other}` }); return false; }
+          seenAddr.set(k, m.id); return true;
+        });
+        if (rows.length) {
+          // Chunked so the address filter stays within URL limits.
+          const existing: { id: string; chain: string; address: string }[] = [];
+          let lookupError: { message: string } | null = null;
+          for (let i = 0; i < rows.length && !lookupError; i += 100) {
+            const r = await supabaseAdmin.from("markets").select("id,chain,address").in("address", rows.slice(i, i + 100).map((m) => m.address));
+            if (r.error) lookupError = r.error; else existing.push(...(r.data ?? []));
+          }
+          if (lookupError) errors.push(`markets lookup: ${lookupError.message}`);
+          else {
+            const owner = new Map(existing.map((e) => [`${e.chain}:${e.address}`, e.id]));
+            rows = rows.filter((m) => {
+              const o = owner.get(`${m.chain}:${m.address}`);
+              if (o && o !== m.id) { rejected.push({ id: m.id, reason: `address already belongs to ${o}` }); return false; }
+              return true;
+            });
+            if (rows.length) {
+              const { error } = await supabaseAdmin.from("markets").upsert(rows.map((m) => ({ ...m, updated_at: now })) as never, { onConflict: "id" });
+              if (error) errors.push(`markets: ${error.message}`);
+            }
+          }
         }
         if (body.reference_prices.length) {
           const { error } = await supabaseAdmin.from("reference_prices").upsert(body.reference_prices, { onConflict: "pair" });
@@ -120,7 +146,8 @@ export const Route = createFileRoute("/api/public/worker-ingest")({
           console.error("worker-ingest failed", errors);
           return Response.json({ ok: false, errors }, { status: 500 });
         }
-        return Response.json({ ok: true, markets: body.markets.length });
+        if (rejected.length) console.warn("worker-ingest rejected markets", rejected.slice(0, 5));
+        return Response.json({ ok: true, markets: body.markets.length - rejected.length, rejected });
       },
     },
   },

@@ -89,19 +89,37 @@ export function AppShell({ children }: { children: ReactNode }) {
   );
 }
 
+const SETUP_TITLE = {
+  never: "Live market service not set up",
+  offline: "Live market service offline",
+  no_url: "Live market service misconfigured",
+  read_error: "Can't check the live market service",
+  unreachable: "Can't reach the live market service",
+} as const;
+
 export function SetupState({ reason }: { reason: string }) {
+  const feed = useFeed();
+  const checking = feed.status === "checking";
+  const title = checking ? "Checking the live market service…" : feed.setupKind ? SETUP_TITLE[feed.setupKind] : "Live market service not connected";
   return (
     <div className="grid h-full place-items-center p-6">
-      <div className="panel max-w-lg p-5">
+      <div className="panel max-w-lg p-5" role="status">
         <div className="mb-2 flex items-center gap-2">
-          <span className="h-2 w-2 rounded-full bg-warn" />
-          <h2 className="text-sm font-semibold">Live market service not connected</h2>
+          <span className={checking ? "h-2 w-2 rounded-full bg-muted-foreground pulse-dot" : feed.setupKind === "offline" || feed.setupKind === "read_error" ? "h-2 w-2 rounded-full bg-down" : "h-2 w-2 rounded-full bg-warn"} />
+          <h2 className="text-sm font-semibold">{title}</h2>
         </div>
-        <p className="text-sm text-muted-foreground">{reason}</p>
+        {!checking && <p className="text-sm text-muted-foreground">{reason}</p>}
+        <dl className="num mt-3 grid grid-cols-[auto_1fr] gap-x-3 gap-y-0.5 text-[11px] text-muted-foreground">
+          <dt>Last check-in</dt><dd>{feed.lastHeartbeatAt ? new Date(feed.lastHeartbeatAt).toLocaleString() : "never"}</dd>
+          <dt>Last checked</dt><dd>{feed.lastCheckAt ? `${new Date(feed.lastCheckAt).toLocaleTimeString()} · auto every 15s` : "—"}</dd>
+        </dl>
         <p className="mt-3 text-xs text-muted-foreground">
           No tokens, prices or trades are shown until real data arrives — nothing here is simulated except your paper orders.
         </p>
-        <Button asChild size="sm" variant="secondary" className="mt-4"><Link to="/status">See setup &amp; coverage</Link></Button>
+        <div className="mt-4 flex gap-2">
+          <Button size="sm" onClick={feed.retry} disabled={checking}>{checking ? "Checking…" : "Retry now"}</Button>
+          <Button asChild size="sm" variant="secondary"><Link to="/status">See setup &amp; coverage</Link></Button>
+        </div>
       </div>
     </div>
   );
