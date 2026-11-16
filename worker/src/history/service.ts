@@ -42,7 +42,7 @@ export type BackfillState = "waiting" | "in_progress" | "done_start" | "done_lim
 
 interface SigMeta {
   signature: string; slot: number; rank: number; txIndex: number | null; prio: Priority;
-  tries: number; nextTryAt: number; lastErr: "transport" | "null" | null; done: boolean; busy: boolean; hintAt: number | null;
+  tries: number; nextTryAt: number; lastErr: "transport" | "null" | null; done: boolean; busy: boolean; hintAt: number | null; exhausted?: boolean;
 }
 interface RankedSwap extends VerifiedSwap { rank: number; txIndex: number | null; provisional?: boolean }
 interface SigRow { signature: string; slot: number; err: unknown; blockTime: number | null; transactionIndex?: number | null }
@@ -59,7 +59,7 @@ interface Entry {
   failure: { kind: "rate_limited" | "unavailable"; message: string; at: number } | null;
   lastTxError: { message: string; at: number } | null;
   live: { hints: number; swaps: number; lastHintAt: number | null; hintToChartMs: number | null; chainToChartMs: number | null; samples: number[];
-    logSwaps: number; logConfirmed: number; logMismatch: number; logFallback: number; chainSamples: number[] };
+    logSwaps: number; logConfirmed: number; logMismatch: number; logFallback: number; logExpired: number; chainSamples: number[] };
   verified: number;
   inflight: Promise<void> | null; again: boolean; lastUsed: number; version: number; built: { version: number; builder: CandleBuilder } | null;
 }
@@ -116,6 +116,8 @@ export function createHistoryService(deps: HistoryDeps) {
   const now = deps.now ?? Date.now;
   const later = deps.later ?? ((fn, ms) => { (setTimeout(fn, ms) as any).unref?.(); });
   const cache = new Map<string, Entry>();
+  // Distinguishes this process's own revisions (authoritative) from a restarted worker's rebuilt snapshot.
+  const instance = `${now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
   const byCurve = new Map<string, Entry>();
   const stats = { refreshes: 0, failures: 0, swapsDecoded: 0, liveHints: 0, liveSwaps: 0, entries: () => cache.size };
 
@@ -131,7 +133,7 @@ export function createHistoryService(deps: HistoryDeps) {
         back: { state: "waiting", before: null, listed: 0, floorTs: null, oldestTs: null },
         highRank: 0, lowRank: 0, scanned: 0, nonSwapTx: 0, failedTx: 0, rejectedEvents: 0, missingTx: 0, transportFailedTx: 0, droppedTx: 0, scanGaps: 0,
         trimmedSwaps: 0, trimmedBeforeTs: null, lastRpcAt: null, lastDataAt: null, scanDoneAt: null, completedAt: null, attemptedAt: 0,
-        failure: null, lastTxError: null, live: { hints: 0, swaps: 0, lastHintAt: null, hintToChartMs: null, chainToChartMs: null, samples: [], logSwaps: 0, logConfirmed: 0, logMismatch: 0, logFallback: 0, chainSamples: [] }, verified: 0,
+        failure: null, lastTxError: null, live: { hints: 0, swaps: 0, lastHintAt: null, hintToChartMs: null, chainToChartMs: null, samples: [], logSwaps: 0, logConfirmed: 0, logMismatch: 0, logFallback: 0, logExpired: 0, chainSamples: [] }, verified: 0,
         inflight: null, again: false, lastUsed: now(), version: 0, built: null };
       cache.set(m.id, e); byCurve.set(m.address, e);
       if (cache.size > MAX_ENTRIES) {
@@ -255,12 +257,27 @@ export function createHistoryService(deps: HistoryDeps) {
     return best;
   }
 
+  function dropProvisional(e: Entry, signature: string, why: "expired") {
+    let n = 0;
+    for (const w of [...e.swaps.values()]) if (w.provisional && w.signature === signature) { e.swaps.delete(w.id); n++; }
+    if (!n) return;
+    if (why === "expired") e.live.logExpired += n;
+    e.version++;
+    log("warn", "provisional swap removed: transaction could not be verified", { market: e.marketId, sig: signature });
+    deps.onChange?.(e.marketId);
+  }
+
   const liveReady = (e: Entry) => { const t = now(); for (const s of e.open) if (s.prio === 0 && !s.busy && s.nextTryAt <= t) return true; return false; };
 
   function retryLater(e: Entry, s: SigMeta, kind: "transport" | "null") {
     s.lastErr = kind;
     s.tries++;
-    if (s.tries >= MAX_TRIES) { finish(e, s); if (kind === "null") e.missingTx++; else e.transportFailedTx++; }
+    if (s.tries >= MAX_TRIES) {
+      finish(e, s); s.exhausted = true;
+      if (kind === "null") e.missingTx++; else e.transportFailedTx++;
+      // Never keep log-decoded swaps whose transaction could not be verified: remove them from the chart.
+      dropProvisional(e, s.signature, "expired");
+    }
     else s.nextTryAt = now() + retryDelay(s.tries, s.prio);
   }
 
@@ -395,7 +412,12 @@ export function createHistoryService(deps: HistoryDeps) {
     if (!e || !viewed(e) || e.poolError || (e.kind === "amm" && !e.pool)) return;
     stats.liveHints++; e.live.hints++; e.live.lastHintAt = h.receivedAt;
     const known = e.sigs.get(h.signature);
-    if (known) { if (!known.done) { known.prio = 0; known.nextTryAt = 0; known.hintAt ??= h.receivedAt; } }
+    if (known?.exhausted && known.done && e.open.size < MAX_PENDING) {
+      // A new notification for a transaction we gave up on: verify it again (undo its gap count).
+      if (known.lastErr === "null") e.missingTx--; else e.transportFailedTx--;
+      Object.assign(known, { done: false, exhausted: false, tries: 0, nextTryAt: 0, prio: 0, hintAt: h.receivedAt });
+      e.open.add(known);
+    } else if (known) { if (!known.done) { known.prio = 0; known.nextTryAt = 0; known.hintAt ??= h.receivedAt; } }
     else if (e.open.size < MAX_PENDING) addSig(e, { signature: h.signature, slot: h.slot }, ++e.highRank, 0, h.receivedAt);
     else return; // backlog full: the next signature scan lists it (or discloses a gap)
     chartFromLogs(e, h);
@@ -476,7 +498,7 @@ export function createHistoryService(deps: HistoryDeps) {
     return {
       marketKind: e.kind, poolVerified: e.kind === "amm" ? !!e.pool : undefined,
       source: e.kind === "amm" ? "solana-rpc:pumpswap-buy-sell-event" : "solana-rpc:pump-trade-event",
-      state, coverage, refreshing: !!e.inflight, candles, swaps: used, version: e.version,
+      state, coverage, refreshing: !!e.inflight, candles, swaps: used, version: e.version, instance,
       provisionalSwaps: [...e.swaps.values()].filter((w) => w.provisional).length,
       lastRateLimitAt: e.failure?.kind === "rate_limited" ? e.failure.at : null, lastSuccessAt: e.lastRpcAt, lastDataAt: e.lastDataAt, completedAt: e.completedAt, error, failureAt: e.failure?.at ?? null, retryAt,
       scannedTransactions: e.scanned, pendingTransactions: pend,
@@ -491,7 +513,7 @@ export function createHistoryService(deps: HistoryDeps) {
         hintToChartMs: e.live.hintToChartMs, chainToChartMs: e.live.chainToChartMs,
         hintToChartMedianMs: e.live.samples.length ? [...e.live.samples].sort((a, b) => a - b)[Math.floor(e.live.samples.length / 2)] : null,
         chainToChartMedianMs: e.live.chainSamples.length ? [...e.live.chainSamples].sort((a, b) => a - b)[Math.floor(e.live.chainSamples.length / 2)] : null,
-        logSwaps: e.live.logSwaps, logConfirmed: e.live.logConfirmed, logMismatch: e.live.logMismatch, logFallback: e.live.logFallback,
+        logSwaps: e.live.logSwaps, logConfirmed: e.live.logConfirmed, logMismatch: e.live.logMismatch, logFallback: e.live.logFallback, logExpired: e.live.logExpired,
         reconnects: deps.live?.stats.reconnects ?? 0, failedExcluded: deps.live?.stats.failedExcluded ?? 0, error: liveState === "streaming" ? null : deps.live?.stats.lastError ?? null,
       },
     };

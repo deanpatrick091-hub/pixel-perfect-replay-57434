@@ -149,7 +149,9 @@ setInterval(async () => {
   if (ammRefreshing) return; // never overlap refresh rounds
   ammRefreshing = true;
   try {
-  const amms = [...store.markets.values()].filter((m) => m.kind === "amm" && m.status === "active").slice(0, 60);
+  // Viewed pools first, then the least recently refreshed, so the 60-pool round rotates through all active pools.
+  const amms = [...store.markets.values()].filter((m) => m.kind === "amm" && m.status === "active")
+    .sort((a, b) => Number(viewing.has(b.id)) - Number(viewing.has(a.id)) || (a.liquidityAt ?? 0) - (b.liquidityAt ?? 0)).slice(0, 60);
   const got = await pairsAt(amms.map((m) => m.address)); // ≤30 pools per request
   for (const m of amms) {
     const r = got.get(m.address);

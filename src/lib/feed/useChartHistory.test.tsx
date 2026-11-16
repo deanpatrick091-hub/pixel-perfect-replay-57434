@@ -178,6 +178,15 @@ describe("mergeSnapshot after a worker restart", () => {
     const next = h(21, 8000, 9060);
     expect(mergeSnapshot(h(361, 1000, 9000), next).data).toBe(next);
   });
+  it("same worker, newer version: an authoritative removal of a provisional edge swap replaces the snapshot", () => {
+    const prev = { ...h(10, 1000, 9000), instance: "w1", version: 5 };
+    const next = { ...h(9, 1060, 9000), instance: "w1", version: 6 };
+    expect(mergeSnapshot(prev, next).data).toBe(next);
+  });
+  it("a different worker instance with a smaller later-starting snapshot is still treated as a restart", () => {
+    const prev = { ...h(361, 1000, 9000), instance: "w1", version: 50 };
+    expect(mergeSnapshot(prev, { ...h(20, 8000, 9000), instance: "w2", version: 3 }).data).toBe(prev);
+  });
   it("normal growth replaces the snapshot", () => {
     const next = h(400, 500, 9000);
     expect(mergeSnapshot(h(361, 1000, 9000), next)).toEqual({ data: next, latest: null });

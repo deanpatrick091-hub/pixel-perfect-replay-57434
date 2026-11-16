@@ -153,6 +153,60 @@ test("live log-decoded swap charts at once and is replaced (not double counted) 
   assert.equal(h.swaps, 2); assert.equal(h.provisionalSwaps, 0); assert.equal(h.live.logConfirmed, 1); assert.equal(h.live.logMismatch, 0);
 });
 
+function provisionalSetup(serve: (sig: string) => unknown) {
+  let t = 1_000_000; const changed: string[] = [];
+  const svc = createHistoryService({ now: () => t, later: () => {}, coolingDown: () => false, onChange: (id: string) => changed.push(id), rpc: async <T,>(method: string, params: unknown[]): Promise<T> => {
+    if (method === "getAccountInfo") return { value: account } as T;
+    if (method === "getSignaturesForAddress") return [{ signature: "A", slot: 1, err: null, blockTime: 1_700_000_000 }] as T;
+    if (params[0] === "L") return serve("L") as T;
+    return swapTx(true) as T;
+  } } as any);
+  const ev = Buffer.alloc(394);
+  Buffer.from([62, 47, 55, 10, 165, 3, 220, 42]).copy(ev); ev.writeBigInt64LE(1_700_000_070n, 8);
+  ev.writeBigUInt64LE(1_000_000n, 16); ev.writeBigUInt64LE(1_000_000_000n, 64); Buffer.from(bs58.decode(pool.address)).copy(ev, 120);
+  const logs = [`Program ${PUMPSWAP_PROGRAM} invoke [1]`, "Program data: " + ev.toString("base64"), `Program ${PUMPSWAP_PROGRAM} success`];
+  return { svc, logs, changed, adv: (ms: number) => { t += ms; }, now: () => t };
+}
+async function drain(x: ReturnType<typeof provisionalSetup>, rounds = 12) {
+  for (let i = 0; i < rounds; i++) { x.adv(10 * 60_000); x.svc.history(m, m.id, 60, { retry: true }); await x.svc._inflight(m.id); }
+}
+
+test("provisional swap whose transaction never verifies is removed after retries, then re-verified by a later hint", async () => {
+  let ready = false;
+  const x = provisionalSetup(() => (ready ? swapTx(false, 1_700_000_070, 1_000_000_000n) : null));
+  x.svc.history(m, m.id, 60); await x.svc._inflight(m.id);
+  x.svc.hint({ curve: pool.address, signature: "L", slot: 2, receivedAt: x.now(), logs: x.logs });
+  const v0 = x.svc.history(m, m.id, 60).version!;
+  assert.equal(x.svc.history(m, m.id, 60).provisionalSwaps, 1);
+  x.changed.length = 0; await drain(x);
+  let h = x.svc.history(m, m.id, 60);
+  assert.equal(h.provisionalSwaps, 0); assert.equal(h.swaps, 1, "unverified provisional swap no longer charted");
+  assert.equal(h.live.logExpired, 1); assert.equal(h.missingTransactions, 1); assert.ok(h.version! > v0); assert.ok(x.changed.length);
+  assert.equal(h.candles.reduce((n, c) => n + c.sells, 0), 0);
+  ready = true; x.svc.hint({ curve: pool.address, signature: "L", slot: 2, receivedAt: x.now() }); await x.svc._inflight(m.id);
+  h = x.svc.history(m, m.id, 60);
+  assert.equal(h.swaps, 2); assert.equal(h.provisionalSwaps, 0); assert.equal(h.missingTransactions, 0);
+  assert.equal(h.candles.reduce((n, c) => n + c.sells, 0), 1);
+});
+
+test("provisional swap is dropped when its full transaction failed on-chain", async () => {
+  const x = provisionalSetup(() => { const tx: any = swapTx(false, 1_700_000_070, 1_000_000_000n); tx.meta.err = { InstructionError: [0, "Custom"] }; return tx; });
+  x.svc.history(m, m.id, 60); await x.svc._inflight(m.id);
+  x.svc.hint({ curve: pool.address, signature: "L", slot: 2, receivedAt: x.now(), logs: x.logs }); await x.svc._inflight(m.id);
+  const h = x.svc.history(m, m.id, 60);
+  assert.equal(h.provisionalSwaps, 0); assert.equal(h.swaps, 1); assert.equal(h.live.logConfirmed, 0);
+});
+
+test("provisional swap that differs from its verified transaction is replaced by the verified values", async () => {
+  const x = provisionalSetup(() => swapTx(true, 1_700_000_071, 3_000_000_000n));
+  x.svc.history(m, m.id, 60); await x.svc._inflight(m.id);
+  x.svc.hint({ curve: pool.address, signature: "L", slot: 2, receivedAt: x.now(), logs: x.logs }); await x.svc._inflight(m.id);
+  const h = x.svc.history(m, m.id, 60);
+  assert.equal(h.provisionalSwaps, 0); assert.equal(h.swaps, 2); assert.equal(h.live.logMismatch, 1);
+  assert.equal(h.candles.reduce((n, c) => n + c.sells, 0), 0, "provisional sell replaced by the verified buy");
+  assert.equal(h.candles.reduce((n, c) => n + c.buys, 0), 2);
+});
+
 test("a live hint arriving during a long backlog decode is fetched next, not after the whole batch", async () => {
   const order: string[] = []; let hinted = false; let svcRef: any;
   const sigs = Array.from({ length: 20 }, (_, i) => ({ signature: `B${i}`, slot: 100 - i, err: null, blockTime: 1_700_000_000 }));

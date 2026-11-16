@@ -18,6 +18,8 @@ interface Snap { key: string; data: ChartHistory | null; netErr: boolean; latest
 const TRANSIENT: ChartHistory["state"][] = ["loading", "rate_limited", "unavailable", "empty", "unknown_market"];
 /** The worker restarted and is rebuilding from its newest window: fewer swaps, later start, nothing newer than we hold. */
 export function isRegressedReload(prev: ChartHistory, next: ChartHistory) {
+  // Same worker process, same-or-newer revision: an authoritative correction (e.g. a rejected provisional swap), never a reset.
+  if (prev.instance && prev.instance === next.instance && (next.version ?? 0) >= (prev.version ?? 0)) return false;
   return next.coverage !== "complete" && next.swaps < prev.swaps && prev.oldestTs != null && next.oldestTs != null &&
     next.oldestTs > prev.oldestTs && (next.newestTs ?? 0) <= (prev.newestTs ?? 0);
 }

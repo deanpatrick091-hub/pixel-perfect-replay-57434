@@ -93,8 +93,8 @@ export function PriceChart({ marketId, quoteCcy, tick, liveTrades, headerPrice =
       // Separate volume pane, all bars positive: full bar = total verified volume (sell colour), overlaid green part = verified buy volume.
       const volFmt = (v: number) => { const x = Math.abs(v); return x < 1e-9 ? "0" : x >= 1000 ? `${(x / 1000).toFixed(1)}K` : x >= 1 ? x.toFixed(2) : x.toPrecision(2); };
       const volumeOptions = { priceFormat: { type: "custom" as const, formatter: volFmt, minMove: 1e-9 }, lastValueVisible: false, priceLineVisible: false };
-      const sellVolume = chart.addSeries(lc.HistogramSeries, { ...volumeOptions, color: down + "b3" }, 1);
-      const buyVolume = chart.addSeries(lc.HistogramSeries, { ...volumeOptions, color: up + "b3" }, 1);
+      const sellVolume = chart.addSeries(lc.HistogramSeries, { ...volumeOptions, color: down }, 1);
+      const buyVolume = chart.addSeries(lc.HistogramSeries, { ...volumeOptions, color: up }, 1);
       chart.panes()[0]?.setStretchFactor(3);
       chart.panes()[1]?.setStretchFactor(1);
       chart.subscribeCrosshairMove((p: any) => setHover(typeof p?.time === "number" ? p.time : null));
@@ -215,7 +215,8 @@ export function PriceChart({ marketId, quoteCcy, tick, liveTrades, headerPrice =
     const scanning = h.state === "partial" && (h.pendingTransactions ?? 0) > 0
       ? ` · loading ${h.backfill?.state === "in_progress" ? "older history" : "swaps"} (${h.pendingTransactions} left)` : h.state === "partial" ? " · incomplete coverage" : "";
     const gaps = [h.rejectedEvents ? `${h.rejectedEvents} rejected` : "", h.missingTransactions ? `${h.missingTransactions} missing` : "", h.transportFailedTransactions ? `${h.transportFailedTransactions} failed` : ""].filter(Boolean).join(" · ");
-    return { tone: streaming && h.coverage === "complete" ? "live" : h.state === "partial" && !(h.pendingTransactions ?? 0) ? "warn" : "ok", text: `${mode} · ${cov} · ${head}${scanning}${h.refreshing ? " · refreshing" : ""}${gaps ? ` · ${gaps}` : ""}` };
+    const unverified = h.provisionalSwaps ? ` · ${h.provisionalSwaps} unverified swap${h.provisionalSwaps > 1 ? "s" : ""} (from logs, transaction check pending)` : "";
+    return { tone: streaming && h.coverage === "complete" && !h.provisionalSwaps ? "live" : h.state === "partial" && !(h.pendingTransactions ?? 0) ? "warn" : "ok", text: `${mode} · ${cov} · ${head}${scanning}${unverified}${h.refreshing ? " · refreshing" : ""}${gaps ? ` · ${gaps}` : ""}` };
   })();
 
   const diag = ((): string[] => {
@@ -225,7 +226,7 @@ export function PriceChart({ marketId, quoteCcy, tick, liveTrades, headerPrice =
     if (expanded.omitted) out.push(`Time spacing: ${expanded.omitted} older empty interval slots omitted at the 6,000-slot display cap; all verified candles are retained. Blank intervals contain no OHLC or volume; incomplete coverage can also leave blanks.`);
     out.push(`Source: ${h.marketKind === "amm" ? `PumpSwap Buy/Sell events (${h.poolVerified ? "exact on-chain pool and mint verified" : "pool and mint verification pending"}; gross SOL swap notional, excluding separately reported fees)` : "Pump.fun TradeEvents"} decoded from confirmed transactions via free public Solana RPC (read-only; never used for prices or paper orders).`);
     out.push(streaming
-      ? `Delivery: Solana logsSubscribe for this market address plus polled catch-up.${h.live?.logSwaps ? ` PumpSwap swaps are charted straight from the notification's program logs (only events logged by PumpSwap itself for this exact pool), then re-checked against the full transaction: ${h.live.logConfirmed ?? 0} confirmed, ${h.live.logMismatch ?? 0} differed${h.provisionalSwaps ? `, ${h.provisionalSwaps} awaiting check` : ""}. A provisional swap's time can move by about a second once confirmed.` : " Each swap is fetched and validated before charting."}${h.live?.hintToChartMs != null ? ` Last live swap charted ${(h.live.hintToChartMs / 1000).toFixed(1)}s after its notification (${((h.live.chainToChartMs ?? 0) / 1000).toFixed(1)}s after its on-chain time)${h.live.hintToChartMedianMs != null ? `; median ${(h.live.hintToChartMedianMs / 1000).toFixed(1)}s` : ""}.` : ""} Every confirmed swap isn't guaranteed to arrive live; the polled catch-up fills misses.`
+      ? `Delivery: Solana logsSubscribe for this market address plus polled catch-up.${h.live?.logSwaps ? ` PumpSwap swaps are charted straight from the notification's program logs (only events logged by PumpSwap itself for this exact pool), then re-checked against the full transaction: ${h.live.logConfirmed ?? 0} confirmed, ${h.live.logMismatch ?? 0} differed${h.live.logExpired ? `, ${h.live.logExpired} removed because their transaction could not be verified` : ""}${h.provisionalSwaps ? `, ${h.provisionalSwaps} awaiting check` : ""}. A provisional swap's time can move by about a second once confirmed.` : " Each swap is fetched and validated before charting."}${h.live?.hintToChartMs != null ? ` Last live swap charted ${(h.live.hintToChartMs / 1000).toFixed(1)}s after its notification (${((h.live.chainToChartMs ?? 0) / 1000).toFixed(1)}s after its on-chain time)${h.live.hintToChartMedianMs != null ? `; median ${(h.live.hintToChartMedianMs / 1000).toFixed(1)}s` : ""}.` : ""} Every confirmed swap isn't guaranteed to arrive live; the polled catch-up fills misses.`
       : `Delivery: polled history (not tick streaming)${h.live?.state && h.live.state !== "off" ? ` — live stream ${h.live.state}${h.live.error ? ` (${h.live.error})` : ""}` : ""}. New swaps can take several seconds to appear.`);
     if (h.oldestTs && h.newestTs) out.push(`Range: verified swaps from ${new Date(h.oldestTs * 1000).toISOString()} to ${new Date(h.newestTs * 1000).toISOString()}.`);
     const b = h.backfill;
