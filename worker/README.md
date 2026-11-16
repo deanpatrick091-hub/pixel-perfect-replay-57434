@@ -7,7 +7,7 @@ serves them to the website. It must run on a host with persistent processes and 
 ## What it does
 - One upstream socket to PumpPortal (`wss://pumpportal.fun/api/data`): `subscribeNewToken`,
   `subscribeMigration` (free), and `subscribeTokenTrade` for up to `MAX_TRADE_SUBSCRIPTIONS`
-  mints (requires a PumpPortal API key **funded with at least 0.02 SOL**; messages are metered).
+  mints (requires a PumpPortal API key **funded with at least 0.02 SOL** and explicit `ENABLE_TRADE_SUBSCRIPTIONS=true`; messages are metered).
 - Builds candles and the trade tape only from swaps it observes (no generated history).
 - Resolves post-migration pools via DEX Screener (`token-pairs/v1/solana/{mint}`), refreshes
   pool reserves via `latest/dex/pairs/solana/{pool}` with a shared cache.
@@ -77,3 +77,17 @@ This data is never used for quotes or paper execution.
 - `SOLANA_RPC_MAX_RPS` (optional, default 2) · `SOLANA_RPC_TIMEOUT_MS` (default 15000).
 - `SOLANA_WS_URL` (optional, default derived from `SOLANA_RPC_URL`: `wss://api.mainnet-beta.solana.com`) · `SOLANA_WS_ENABLED` (default true) · `SOLANA_WS_MAX_SUBS` (default 5).
 Endpoint: `GET /api/history?market=<id>&tf=<1s|5s|15s|1m|5m|15m|1h|4h|1D>[&retry=1]`. `/status` → `chartHistory.rpc`, `chartHistory.liveLogs`. Tests: `cd worker && npm test`.
+
+## Restart recovery and deployment checks
+
+Deploy the website and worker changes together. Before listening for new launches, the worker makes a bounded (5 second) authenticated GET to `INGEST_URL` and restores up to 3,000 previously ingested market identities. This keeps existing chart links usable after a restart; markets never seen by this service still need a separate discovery adapter. If the website is unavailable, startup continues and logs the restore failure.
+
+Restoration does not invent candles, refresh quote timestamps, or declare old quotes executable. Restored markets start with live execution unavailable; chart swaps are revalidated through the existing read-only RPC history path. A genuinely observed upstream swap can restore a live trade feed.
+
+- Use a **published public website URL**, not a Lovable editor/preview login URL, for `INGEST_URL`.
+- `PUBLIC_URL` must be the worker's reachable HTTPS origin; `ALLOWED_ORIGINS` must include the published website's exact origin.
+- Verify `GET <worker>/health`, `GET <worker>/status`, and `GET <worker>/api/history?market=<known-market-id>&tf=1m`.
+- A read-only chart works without metered PumpPortal subscriptions. A funded key alone does not enable metered trades: both the key and `ENABLE_TRADE_SUBSCRIPTIONS=true` are required. The default stays false.
+- Public RPC coverage and latency are limited; this patch does not add Raydium/Meteora coverage or guarantee parity with a commercial indexed feed.
+
+Regression tests cover quiet-socket pongs, subscription rejection/retry, acknowledgement timeout, cancellation cleanup, restart metadata, stale-quote safety, and paid-feed opt-in. Run `npm test` and `npm run typecheck` in `worker/` before deploying.

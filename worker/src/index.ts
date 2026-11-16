@@ -7,6 +7,7 @@ import { startSolUsd, solUsd, solUsdFresh } from "./solusd.ts";
 import { pair, tokenPairs, dexStats } from "./dexscreener.ts";
 import { push, ingestStats } from "./ingest.ts";
 import { historyStats } from "./history/index.ts";
+import { restoreMarkets } from "./restore.ts";
 
 const store = new Store();
 const pump = new PumpPortalAdapter();
@@ -36,7 +37,7 @@ function subscribe(mint: string) {
 function coverage() {
   const trades = runtime.tradesRejected ? `rejected by PumpPortal: ${runtime.tradesRejected}` : tradeSubsEnabled()
     ? `live for up to ${config.maxTradeSubs} subscribed mints (metered)`
-    : "unavailable — set PUMPPORTAL_API_KEY to enable";
+    : "unavailable — requires PUMPPORTAL_API_KEY and explicit ENABLE_TRADE_SUBSCRIPTIONS=true (metered)";
   return {
     "solana/pumpfun/bonding-curve": { launches: upstreamConnected ? "live" : "reconnecting", migrations: upstreamConnected ? "live" : "reconnecting", trades, quoteModel: "pump_curve_v1 (constant product on virtual reserves)", chartHistory: "candles (all timeframes) from validated Pump TradeEvents via free Solana RPC for viewed curves: live logsSubscribe hints + polled catch-up, bounded backfill (~60 min / 1000 signatures); read-only, not used for execution", paperExecution: tradeSubsEnabled() ? "enabled on subscribed curves with fresh state" : "disabled (no live trade source)" },
     "solana/pumpswap/amm": { destinationPools: "resolved via DEX Screener after verified migration event", trades: tradeSubsEnabled() ? "unverified until first swap observed per pool" : "unavailable", quoteModel: "cpmm_reserves from DEX Screener liquidity (refreshed ~15s)" },
@@ -96,6 +97,14 @@ async function resolveDestination(curve: Market, attempt = 0) {
   store.markDirty(curve.id);
   store.addAmm(amm);
   log("info", "destination pool verified", { mint: curve.mint, pool: p.pairAddress, dex: p.dexId });
+}
+
+// Preserve existing chart links across worker restarts. Failure is bounded and must not prevent startup.
+try {
+  const restored = await restoreMarkets(store, { url: config.ingestUrl, secret: config.ingestSecret });
+  log("info", "market restore completed", restored);
+} catch (error) {
+  log("warn", "market restore unavailable; continuing with new launches", { error: String(error) });
 }
 
 pump.start({

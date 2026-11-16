@@ -81,7 +81,7 @@ function Status() {
             <li>Save a long random <b className="text-foreground">WORKER_INGEST_SECRET</b> in this project&apos;s secrets.</li>
             <li>Deploy the <code>worker/</code> folder to an always-on host (Railway, Fly.io or Render) using <code>worker/Dockerfile</code>.</li>
             <li>Set the worker variables from <code>worker/.env.example</code> — the same secret, <code>INGEST_URL</code> pointing at this site&apos;s <code>/api/public/worker-ingest</code>, and its own <code>PUBLIC_URL</code>.</li>
-            <li>Optional: add a PumpPortal API key funded with at least 0.02 SOL as <code>PUMPPORTAL_API_KEY</code> to unlock live swaps, charts and paper execution.</li>
+            <li>Free read-only charts use Solana RPC. For metered live swaps and paper execution only: add a funded <code>PUMPPORTAL_API_KEY</code> and explicitly set <code>ENABLE_TRADE_SUBSCRIPTIONS=true</code> after accepting PumpPortal fees.</li>
           </ol>
         </div>
       </div>

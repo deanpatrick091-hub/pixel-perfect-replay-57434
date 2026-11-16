@@ -24,4 +24,4 @@ export const config = {
 };
 
 export const runtime = { tradesRejected: null as string | null };
-export const tradeSubsEnabled = () => config.enableTradeSubs && !runtime.tradesRejected;
+export const tradeSubsEnabled = () => config.enableTradeSubs && !!config.pumpPortalKey && !runtime.tradesRejected;

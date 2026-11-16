@@ -61,6 +61,15 @@ export class Store extends EventEmitter {
     return m;
   }
 
+  /** Restore chart identities after a restart, without inventing swaps or refreshing executable state. */
+  restoreMarket(m: Market) {
+    if (this.markets.has(m.id)) return false;
+    this.markets.set(m.id, m);
+    this.byMint.set(m.mint, [...(this.byMint.get(m.mint) ?? []), m.id]);
+    this.evict();
+    return this.markets.has(m.id);
+  }
+
   addAmm(m: Market) {
     this.markets.set(m.id, m);
     this.byMint.set(m.mint, [...(this.byMint.get(m.mint) ?? []).filter((x) => x !== m.id), m.id]);
@@ -120,6 +129,8 @@ export class Store extends EventEmitter {
       m.priceQuote = ev.price;
       if (m.tradeFeed === "unverified") m.tradeFeed = "live"; // first observed swap verifies coverage
     }
+    // Restored snapshots are unavailable until an actual upstream swap is observed.
+    if (m.status === "active") m.tradeFeed = "live";
     this.touch(m.id, "trade", t);
     return t;
   }

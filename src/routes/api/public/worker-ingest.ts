@@ -61,6 +61,16 @@ function timingSafeEqual(a: string, b: string) {
 export const Route = createFileRoute("/api/public/worker-ingest")({
   server: {
     handlers: {
+      // Authenticated startup snapshot: only market metadata; no account/order data or secrets.
+      GET: async ({ request }) => {
+        const secret = process.env["WORKER_INGEST_SECRET"];
+        if (!secret || secret.length < 24) return Response.json({ error: "WORKER_INGEST_SECRET is not configured on the website" }, { status: 503 });
+        if (!timingSafeEqual(request.headers.get("authorization") ?? "", `Bearer ${secret}`)) return Response.json({ error: "unauthorized" }, { status: 401 });
+        const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
+        const { data, error } = await supabaseAdmin.from("markets").select("*").eq("chain", "solana").order("updated_at", { ascending: false }).limit(3_000);
+        if (error) return Response.json({ error: "market snapshot unavailable" }, { status: 503 });
+        return Response.json({ markets: data ?? [] }, { headers: { "cache-control": "no-store" } });
+      },
       POST: async ({ request }) => {
         const secret = process.env["WORKER_INGEST_SECRET"];
         if (!secret || secret.length < 24) {
