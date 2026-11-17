@@ -1,5 +1,52 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { ChartHistory } from "./types";
+import { INTERVALS } from "../market/candles";
+import type { Candle } from "./types";
+
+/**
+ * Last whole snapshot per market|timeframe for this page session, so revisits and timeframe switches paint
+ * real cached candles instantly (flagged `cached` until a fresh response for that key arrives).
+ */
+const CACHE_MAX = 60;
+const cache = new Map<string, { data: ChartHistory; fetchedAt: number }>();
+const TF_SEC = INTERVALS;
+export function clearHistoryCache() { cache.clear(); }
+function remember(key: string, data: ChartHistory, fetchedAt: number) {
+  cache.delete(key); cache.set(key, { data, fetchedAt });
+  if (cache.size > CACHE_MAX) cache.delete(cache.keys().next().value as string);
+}
+/** Exact re-bucketing of finer epoch-aligned candles into a coarser interval that it divides (same swap set). */
+export function rebucket(candles: Candle[], fromSec: number, toSec: number): Candle[] | null {
+  if (!(fromSec > 0) || toSec % fromSec !== 0 || toSec < fromSec) return null;
+  const out: Candle[] = [];
+  let cur: Candle | null = null;
+  for (const c of [...candles].sort((a, b) => a.t - b.t)) {
+    if (c.t % fromSec !== 0) return null; // not aligned: refuse rather than guess
+    const t = Math.floor(c.t / toSec) * toSec;
+    if (!cur || cur.t !== t) { cur = { ...c, t }; out.push(cur); continue; }
+    cur.h = Math.max(cur.h, c.h); cur.l = Math.min(cur.l, c.l); cur.c = c.c; cur.v += c.v;
+    cur.buyVolume = cur.buyVolume != null && c.buyVolume != null ? cur.buyVolume + c.buyVolume : undefined;
+    cur.sellVolume = cur.sellVolume != null && c.sellVolume != null ? cur.sellVolume + c.sellVolume : undefined; cur.buys += c.buys; cur.sells += c.sells;
+  }
+  return out;
+}
+/** Cached snapshot for this key, else one derived exactly from a cached finer timeframe of the same market. */
+export function cachedSnapshot(marketId: string, tf: string): { data: ChartHistory; fetchedAt: number } | null {
+  const hit = cache.get(`${marketId}|${tf}`);
+  if (hit) return hit;
+  const to = TF_SEC[tf];
+  if (!to) return null;
+  let best: { data: ChartHistory; fetchedAt: number; from: number } | null = null;
+  for (const [k, v] of cache) {
+    const [m, f] = [k.slice(0, k.lastIndexOf("|")), k.slice(k.lastIndexOf("|") + 1)];
+    const from = TF_SEC[f];
+    if (m !== marketId || !from || from >= to || to % from !== 0 || v.data.market !== marketId) continue;
+    if (!best || v.fetchedAt > best.fetchedAt) best = { ...v, from };
+  }
+  if (!best) return null;
+  const candles = rebucket(best.data.candles, best.from, to);
+  return candles ? { data: { ...best.data, tf, candles }, fetchedAt: best.fetchedAt } : null;
+}
 
 export type HistoryFetcher = (marketId: string, tf: string, signal: AbortSignal, opts?: { retry?: boolean }) => Promise<ChartHistory | null>;
 export type NudgeSubscribe = (marketId: string, onNudge: () => void) => () => void;
@@ -14,7 +61,7 @@ const ERR_BACKOFF = [3_000, 6_000, 12_000, 30_000];
  * `data` is always one whole snapshot. `latest` is the most recent response when it was a transient
  * failure/empty without candles and we kept the previous candle snapshot instead (never mixed).
  */
-interface Snap { key: string; data: ChartHistory | null; netErr: boolean; latest: ChartHistory | null; fetchedAt: number | null }
+interface Snap { key: string; data: ChartHistory | null; netErr: boolean; latest: ChartHistory | null; fetchedAt: number | null; cached: boolean }
 const TRANSIENT: ChartHistory["state"][] = ["loading", "rate_limited", "unavailable", "empty", "unknown_market"];
 /** The worker restarted and is rebuilding from its newest window: fewer swaps, later start, nothing newer than we hold. */
 export function isRegressedReload(prev: ChartHistory, next: ChartHistory) {
@@ -44,7 +91,11 @@ export function pollDelay(valid: ChartHistory | null, errStreak: number) {
   return busy ? POLL_BUSY_MS : POLL_IDLE_MS;
 }
 
-const empty = (key: string): Snap => ({ key, data: null, netErr: false, latest: null, fetchedAt: null });
+const empty = (key: string): Snap => ({ key, data: null, netErr: false, latest: null, fetchedAt: null, cached: false });
+const initial = (key: string, marketId: string, tf: string): Snap => {
+  const c = cachedSnapshot(marketId, tf);
+  return c ? { ...empty(key), data: c.data, fetchedAt: c.fetchedAt, cached: true } : empty(key);
+};
 
 /**
  * Polls read-only history for the selected market/timeframe while `active` and the page is visible, and refetches
@@ -54,11 +105,11 @@ const empty = (key: string): Snap => ({ key, data: null, netErr: false, latest: 
  */
 export function useChartHistory(marketId: string, tf: string, fetcher: HistoryFetcher, active: boolean, subscribe?: NudgeSubscribe) {
   const key = `${marketId}|${tf}`;
-  const [snap, setSnap] = useState<Snap>(() => empty(key));
+  const [snap, setSnap] = useState<Snap>(() => initial(key, marketId, tf));
   const retryRef = useRef<() => void>(() => {});
 
   useEffect(() => {
-    setSnap((p) => (p.key === key ? p : empty(key)));
+    setSnap((p) => (p.key === key ? p : initial(key, marketId, tf)));
     if (!active) return;
     let stopped = false, inflightAt = 0, again = false, retryNext = false, lastStart = -Infinity, errStreak = 0;
     let timer: ReturnType<typeof setTimeout> | undefined, timerAt = 0;
@@ -81,7 +132,13 @@ export function useChartHistory(marketId: string, tf: string, fetcher: HistoryFe
       inflightAt = 0; ctrl = null;
       const valid = res && res.market === marketId && res.tf === tf ? res : null;
       errStreak = valid ? 0 : errStreak + 1;
-      setSnap((p) => (p.key !== key ? p : valid ? { key, ...mergeSnapshot(p.data, valid), netErr: false, fetchedAt: Date.now() } : { ...p, netErr: true }));
+      setSnap((p) => {
+        if (p.key !== key) return p;
+        if (!valid) return { ...p, netErr: true };
+        const merged = mergeSnapshot(p.data, valid), at = Date.now();
+        remember(key, merged.data, at);
+        return { key, ...merged, netErr: false, fetchedAt: at, cached: false };
+      });
       schedule(again ? 0 : pollDelay(valid, errStreak));
     };
     const wake = () => { if (!hidden()) schedule(0); else clearTimeout(timer); };
@@ -109,5 +166,5 @@ export function useChartHistory(marketId: string, tf: string, fetcher: HistoryFe
   }, [key, marketId, tf, fetcher, active, subscribe]);
 
   const retry = useCallback(() => retryRef.current(), []);
-  return { ...(snap.key === key ? snap : empty(key)), retry };
+  return { ...(snap.key === key ? snap : initial(key, marketId, tf)), retry };
 }

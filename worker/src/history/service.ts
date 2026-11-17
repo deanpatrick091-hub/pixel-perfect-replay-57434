@@ -26,6 +26,9 @@ export const BACKFILL_MAX_AGE_SEC = 48 * 3_600; // ...and no older than this bef
 const BACKFILL_AHEAD = 100;            // don't list more older signatures than this ahead of decoding
 const SIG_PAGES_PER_REFRESH = 3;
 const TX_PER_REFRESH = 30;
+// Older backfill gets a small slice per round so the gap-safe newest-signature scan (TTL) and live hints
+// are never queued behind a long backfill run on the shared free-RPC budget.
+export const BACKFILL_TX_PER_REFRESH = 6;
 export const MAX_TRIES = 8;            // null / transport error: retried with backoff (~3 min) before being reported
 const RETRY_BASE_MS = 1_000, RETRY_MAX_MS = 60_000;
 const MAX_PENDING = 600;
@@ -354,7 +357,8 @@ export function createHistoryService(deps: HistoryDeps) {
       }
       await decodeTransactions(e, 0, 10);                 // live hints first
       if (scanDue(e)) await scanSignatures(e);            // newest signatures (gap-safe catch-up)
-      await decodeTransactions(e, 2, TX_PER_REFRESH);     // live > recent > backfill
+      await decodeTransactions(e, 1, TX_PER_REFRESH);     // live > recent (newest first: first visible candles)
+      await decodeTransactions(e, 2, BACKFILL_TX_PER_REFRESH); // then a bounded slice of older backfill
       if (backfillDue(e)) await backfillPage(e);          // progressively list older signatures
       e.failure = null;
       if (!e.scan && e.open.size === 0 && e.back.state !== "in_progress" && gapCount(e) === 0 && e.rejectedEvents === 0) e.completedAt = now();

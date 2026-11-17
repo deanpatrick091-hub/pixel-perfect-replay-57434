@@ -194,7 +194,7 @@ export function PriceChart({ marketId, quoteCcy, tick, liveTrades, headerPrice =
   // ---- status (outside the canvas) ----
   const streaming = h?.live?.state === "streaming";
   const complete = h?.coverage === "complete";
-  const status = ((): { tone: Tone; text: string; retry?: boolean } => {
+  const baseStatus = ((): { tone: Tone; text: string; retry?: boolean } => {
     if (hist.latest?.candles.length) return { tone: "warn", text: `Market service returned less history (${hist.latest.swaps} swaps, likely restarted and reloading) · showing the previous snapshot of ${h?.swaps ?? 0} swaps${h?.provisionalSwaps ? ` (${h.provisionalSwaps} still unverified)` : ""} until it catches up or a newer swap arrives` };
     if (hist.latest) return { tone: "warn", text: `${hist.latest.error ?? `Latest attempt: ${hist.latest.state}`} · retaining ${h?.swaps ?? 0} swaps${h?.provisionalSwaps ? ` (${h.provisionalSwaps} still unverified)` : ""}`, retry: true };
     if (useLive) return { tone: "live", text: `Swaps streamed by PumpPortal · ${list.reduce((n, c) => n + c.buys + c.sells, 0)} swaps` };
@@ -218,6 +218,9 @@ export function PriceChart({ marketId, quoteCcy, tick, liveTrades, headerPrice =
     const unverified = h.provisionalSwaps ? ` · ${h.provisionalSwaps} unverified swap${h.provisionalSwaps > 1 ? "s" : ""} (from logs, transaction check pending)` : "";
     return { tone: streaming && h.coverage === "complete" && !h.provisionalSwaps ? "live" : h.state === "partial" && !(h.pendingTransactions ?? 0) ? "warn" : "ok", text: `${mode} · ${cov} · ${head}${scanning}${unverified}${h.refreshing ? " · refreshing" : ""}${gaps ? ` · ${gaps}` : ""}` };
   })();
+  // Instant paint from this session's cache: say so until the first fresh response for this market/timeframe.
+  const status = hist.cached && h && !historyOff && !useLive
+    ? { ...baseStatus, text: `Cached snapshot from ${ago(hist.fetchedAt, now)} · refreshing · ${baseStatus.text}` } : baseStatus;
 
   const diag = ((): string[] => {
     if (!h || historyOff) return h?.error ? [h.error] : [];

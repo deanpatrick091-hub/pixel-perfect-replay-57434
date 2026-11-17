@@ -1,6 +1,6 @@
 import { describe, expect, it, vi, afterEach } from "vitest";
 import { renderHook, act } from "@testing-library/react";
-import { mergeSnapshot, useChartHistory, POLL_IDLE_MS, POLL_BUSY_MS, MIN_GAP_MS, STUCK_MS, type HistoryFetcher, type NudgeSubscribe } from "./useChartHistory";
+import { clearHistoryCache, mergeSnapshot, useChartHistory, POLL_IDLE_MS, POLL_BUSY_MS, MIN_GAP_MS, STUCK_MS, type HistoryFetcher, type NudgeSubscribe } from "./useChartHistory";
 import type { ChartHistory } from "./types";
 
 const snap = (market: string, tf: string, swaps: number, state: ChartHistory["state"] = "ok"): ChartHistory => ({
@@ -8,7 +8,7 @@ const snap = (market: string, tf: string, swaps: number, state: ChartHistory["st
 });
 const flush = () => act(async () => { await vi.advanceTimersByTimeAsync(0); });
 
-afterEach(() => vi.useRealTimers());
+afterEach(() => { vi.useRealTimers(); clearHistoryCache(); });
 
 describe("useChartHistory polling", () => {
   it("polls once at a time and stops after unmount", async () => {
@@ -79,16 +79,19 @@ describe("useChartHistory polling", () => {
     expect(result.current.latest?.swaps).toBe(0);
   });
 
-  it("timeframe change resets to that timeframe's own snapshot", async () => {
+  it("timeframe change shows a cached derived snapshot (flagged) until that timeframe's own snapshot arrives", async () => {
     vi.useFakeTimers();
     const fetcher = vi.fn<HistoryFetcher>(async (m, tf) => snap(m, tf, tf === "5m" ? 2 : 9));
     const { result, rerender } = renderHook(({ tf }) => useChartHistory("A", tf, fetcher, true), { initialProps: { tf: "1m" } });
     await flush();
     expect(result.current.data?.tf).toBe("1m");
     rerender({ tf: "5m" });
-    expect(result.current.data).toBeNull();
+    expect(result.current.data?.tf).toBe("5m");
+    expect(result.current.cached).toBe(true);
     await flush();
     expect(result.current.data?.tf).toBe("5m");
+    expect(result.current.data?.swaps).toBe(2);
+    expect(result.current.cached).toBe(false);
     expect(fetcher).toHaveBeenLastCalledWith("A", "5m", expect.anything());
   });
 

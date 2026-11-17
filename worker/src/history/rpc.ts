@@ -31,25 +31,36 @@ export function createRpc(o: RpcOptions) {
   // Adaptive: each rate limit slows the shared budget (x1.5, down to 1/4 of the configured rate);
   // it creeps back 5% per 20 consecutive successes. Never faster than configured.
   let gap = baseGap, okStreak = 0;
-  type W = { prio: Priority; seq: number; go: () => void; fail: (e: Error) => void };
+  type W = { prio: Priority; seq: number; method: string; go: () => void; fail: (e: Error) => void };
+  // Per-method allowance from the provider's own headers (public mainnet reports `x-ratelimit-method-limit: 10`
+  // and `x-ratelimit-method-remaining` for getTransaction). When it reaches 0 only that method is held.
+  const METHOD_WINDOW_MS = 10_000;
+  const methodLimit = new Map<string, number>();
+  const methodBlockedUntil = new Map<string, number>();
+  const methodWait = (m: string, t: number) => {
+    const blocked = (methodBlockedUntil.get(m) ?? 0) - t;
+    if (blocked > 0) return blocked;
+    return 0;
+  };
   const queue: W[] = [];
   let active = 0, lastStart = 0, cooldownUntil = 0, cooldownReason: "rate_limited" | "forbidden" | null = null, penalty = 0, seq = 0;
   let timer: ReturnType<typeof setTimeout> | null = null;
 
   const stats = {
-    requests: 0, ok: 0, timeouts: 0, transportErrors: 0, rpcErrors: 0, limited: 0, forbidden: 0, rejectedBusy: 0, retried: 0,
+    requests: 0, ok: 0, timeouts: 0, transportErrors: 0, rpcErrors: 0, limited: 0, forbidden: 0, rejectedBusy: 0, retried: 0, deduped: 0, methodHolds: 0, methodLimits: {} as Record<string, number>,
     queued: 0, maxQueue, lastLimitedAt: 0, cooldownUntil: 0, cooldownReason: null as string | null,
     lastError: null as string | null, lastErrorAt: 0, latencyMs: null as number | null, budgetRps: 1000 / gap,
   };
   const coolingDown = () => now() < cooldownUntil;
 
-  function startCooldown(kind: "rate_limited" | "forbidden") {
+  function startCooldown(kind: "rate_limited" | "forbidden", retryAfterMs = 0) {
     // 429: 5s doubling to 2min. 403 means the endpoint refuses us: much longer (1min doubling to 10min).
     const base = kind === "forbidden" ? 60_000 : 5_000, cap = kind === "forbidden" ? 600_000 : 120_000;
     penalty = Math.min(penalty ? penalty * 2 : base, cap);
     gap = Math.min(Math.round(gap * 1.5), baseGap * 4); okStreak = 0; stats.budgetRps = 1000 / gap;
     if (kind === "forbidden") penalty = Math.max(penalty, base);
-    cooldownUntil = now() + penalty; cooldownReason = kind;
+    // Never resume before the provider's Retry-After (retrying early only earns another 429).
+    cooldownUntil = now() + Math.max(penalty, Math.min(retryAfterMs, cap)); cooldownReason = kind;
     stats.cooldownUntil = cooldownUntil; stats.cooldownReason = kind;
     // Queued work is released with the same backoff error instead of waiting on a held slot.
     for (const w of queue.splice(0)) w.fail(kind === "forbidden" ? new RpcForbidden(cooldownUntil) : new RpcLimited(429, cooldownUntil));
@@ -63,8 +74,13 @@ export function createRpc(o: RpcOptions) {
       if (t < cooldownUntil) { startCooldown(cooldownReason ?? "rate_limited"); return; }
       const wait = gap - (t - lastStart);
       if (wait > 0) { timer = setTimeout(pump, wait); return; }
-      let best = 0;
-      for (let i = 1; i < queue.length; i++) if (queue[i].prio < queue[best].prio || (queue[i].prio === queue[best].prio && queue[i].seq < queue[best].seq)) best = i;
+      let best = -1, soonest = Infinity;
+      for (let i = 0; i < queue.length; i++) {
+        const mw = methodWait(queue[i].method, t);
+        if (mw > 0) { soonest = Math.min(soonest, mw); continue; } // that method's window is full: others may proceed
+        if (best < 0 || queue[i].prio < queue[best].prio || (queue[i].prio === queue[best].prio && queue[i].seq < queue[best].seq)) best = i;
+      }
+      if (best < 0) { timer = setTimeout(pump, Math.max(10, soonest)); return; }
       const [w] = queue.splice(best, 1);
       stats.queued = queue.length;
       active++; lastStart = t;
@@ -72,13 +88,25 @@ export function createRpc(o: RpcOptions) {
     }
   }
 
-  function slot(prio: Priority) {
+  function slot(prio: Priority, method: string) {
     if (coolingDown()) return Promise.reject(cooldownReason === "forbidden" ? new RpcForbidden(cooldownUntil) : new RpcLimited(429, cooldownUntil));
     if (queue.length >= maxQueue) { stats.rejectedBusy++; return Promise.reject(new RpcBusy()); }
-    return new Promise<void>((go, fail) => { queue.push({ prio, seq: seq++, go, fail }); stats.queued = queue.length; pump(); });
+    return new Promise<void>((go, fail) => { queue.push({ prio, seq: seq++, method, go, fail }); stats.queued = queue.length; pump(); });
   }
   function release() { active--; pump(); }
 
+  function learnLimit(method: string, r: Response) {
+    const lim = Number(r.headers?.get?.("x-ratelimit-method-limit"));
+    if (Number.isInteger(lim) && lim > 0 && lim < 1_000) { methodLimit.set(method, lim); stats.methodLimits[method] = lim; }
+    // The provider says this method's allowance is used up: hold just that method for a window
+    // instead of spending a 429 (which cools down every method, including live hints and scans).
+    const rem = r.headers?.get?.("x-ratelimit-method-remaining");
+    if (rem != null && rem !== "" && Number(rem) <= 0) { methodBlockedUntil.set(method, now() + METHOD_WINDOW_MS); stats.methodHolds++; }
+  }
+  function retryAfter(r: Response) {
+    const v = Number(r.headers?.get?.("retry-after"));
+    return Number.isFinite(v) && v > 0 ? v * 1000 : 0;
+  }
   async function once<T>(method: string, params: unknown[]): Promise<T> {
     stats.requests++;
     const t0 = now();
@@ -93,7 +121,8 @@ export function createRpc(o: RpcOptions) {
       if (timeout) stats.timeouts++;
       throw new RpcTransport(timeout ? "timeout" : "network", timeout ? `${method} timed out after ${Math.round(timeoutMs / 1000)}s` : `${method} network error: ${(err as Error)?.message ?? err}`);
     }
-    if (r.status === 429) { stats.limited++; stats.lastLimitedAt = now(); startCooldown("rate_limited"); throw new RpcLimited(429, cooldownUntil); }
+    learnLimit(method, r);
+    if (r.status === 429) { stats.limited++; stats.lastLimitedAt = now(); startCooldown("rate_limited", retryAfter(r)); throw new RpcLimited(429, cooldownUntil); }
     if (r.status === 403) { stats.forbidden++; startCooldown("forbidden"); throw new RpcForbidden(cooldownUntil); }
     if (r.status >= 500) throw new RpcTransport("http", `${method} HTTP ${r.status}`);
     if (!r.ok) { stats.rpcErrors++; throw new RpcError(r.status, `HTTP ${r.status}`); }
@@ -114,10 +143,20 @@ export function createRpc(o: RpcOptions) {
     return j.result as T;
   }
 
+  // Identical concurrent calls (e.g. a live hint and a scan asking for the same transaction) share one request.
+  const inflight = new Map<string, Promise<unknown>>();
+  function rpc<T>(method: string, params: unknown[], prio: Priority = 1): Promise<T> {
+    const k = method + JSON.stringify(params);
+    const hit = inflight.get(k);
+    if (hit) { stats.deduped++; return hit as Promise<T>; }
+    const p = call<T>(method, params, prio).finally(() => inflight.delete(k));
+    inflight.set(k, p);
+    return p;
+  }
   /** One budgeted RPC call. Transport failures (timeout/network/5xx) are retried a bounded number of times. */
-  async function rpc<T>(method: string, params: unknown[], prio: Priority = 1): Promise<T> {
+  async function call<T>(method: string, params: unknown[], prio: Priority = 1): Promise<T> {
     for (let attempt = 0; ; attempt++) {
-      await slot(prio);
+      await slot(prio, method);
       try { return await once<T>(method, params); }
       catch (err) {
         if (!(err instanceof RpcTransport)) throw err;

@@ -67,7 +67,7 @@ test("backfill: seeds newest window, then pages older history within the signatu
   assert.equal(s1.backfill!.state, "in_progress");
   assert.ok(s1.swaps > 0, "chart seeded from the newest swaps first");
   assert.ok(h.prios.filter(([m]) => m.startsWith("B")).slice(0, 5).every(([m]) => Number(m.slice(1)) < 100), "newest decoded first");
-  for (let i = 0; i < 260; i++) { await h.run(); h.advance(2_000); }
+  for (let i = 0; i < 700; i++) { await h.run(); h.advance(2_000); } // backfill now takes a bounded slice per round
   const s = h.snap(1);
   assert.equal(s.backfill!.state, "done_limit");
   assert.equal(s.backfill!.listedSignatures, BACKFILL_MAX_SIGS);
