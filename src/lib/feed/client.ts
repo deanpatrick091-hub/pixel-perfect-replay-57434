@@ -57,7 +57,7 @@ export class FeedClient {
   private onWake() {
     const w = this.waker;
     if (w.state === "waking") {
-      this.setup("waking", `Starting market service… the free host may take about a minute to wake up.${w.attempts > 1 && w.lastError ? ` (attempt ${w.attempts} of ${w.maxAttempts}: ${w.lastError})` : ""}`);
+      this.setup("waking", `The free host may take about a minute to wake up.${w.attempts > 1 && w.lastError ? ` (attempt ${w.attempts} of ${w.maxAttempts}: ${w.lastError})` : ""}`);
     } else if (w.state === "ready" && w.url) {
       this.wokenUrl = w.url; this.wokenAt = Date.now(); this.wakeFailedUrl = null;
       this.workerUrl = w.url;
@@ -165,9 +165,8 @@ export class FeedClient {
     const ws = new WebSocket(this.workerUrl.replace(/^http/, "ws") + "/ws");
     this.ws = ws;
     ws.onopen = async () => {
-      this.backoff = 1000; this.wsFailures = 0; this.setupKind = null;
+      // Backoff/failure counters reset only on real data (onmessage): a socket the worker opens then rejects must not loop forever.
       const wasConnected = this.everConnected;
-      this.everConnected = true;
       // Socket open is not "Live": wait for the first real message from the worker.
       if (this.status === "setup") { this.status = "connecting"; }
       const topics = [...this.topics.keys()];
@@ -180,7 +179,7 @@ export class FeedClient {
     };
     ws.onmessage = (ev) => {
       this.lastMessageAt = Date.now();
-      if (this.status !== "connected") { this.status = "connected"; this.setupKind = null; this.waker.cancel(); }
+      if (this.status !== "connected") { this.status = "connected"; this.everConnected = true; this.backoff = 1000; this.wsFailures = 0; this.setupKind = null; this.waker.cancel(); }
       let msg: any;
       try { msg = JSON.parse(ev.data); } catch { return; }
       if (msg.reference) this.reference = msg.reference;

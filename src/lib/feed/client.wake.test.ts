@@ -109,4 +109,18 @@ describe("FeedClient cold-start wake", () => {
     FakeWS.all[0]!.onmessage!({ data: JSON.stringify({ type: "batch", markets: [], trades: [] }) });
     expect(c.status).toBe("connected");
   });
+
+  it("a socket that opens but is closed before any data is not Live and becomes unreachable", async () => {
+    rpc.mockResolvedValue(hb(5_000));
+    vi.stubGlobal("fetch", vi.fn(async (_u: string) => new Response("{}", { status: 403 })));
+    const c = await client();
+    c.start(); await tick();
+    for (let i = 0; i < 3; i++) {
+      const ws = FakeWS.all.at(-1)!;
+      ws.onopen!(); await tick();
+      expect(c.status).not.toBe("connected");
+      ws.onclose!(); await tick(20_000);
+    }
+    expect(c.setupKind).toBe("unreachable");
+  });
 });
