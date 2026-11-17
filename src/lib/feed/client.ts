@@ -6,6 +6,17 @@ import type { FeedStatus, MarketSummary, Reference, Trade } from "./types";
 // Browser connection to the market worker. Snapshot first, then apply batched updates.
 // The worker announces its public URL via heartbeat (worker_status table), so the site needs no config.
 
+/** Accept only recognised worker messages (hello/ref/batch with a numeric seq); anything else never counts as live data. */
+export function parseWorkerMessage(data: unknown): { type: "hello" | "ref" | "batch"; seq: number; reference?: Reference; markets?: MarketSummary[]; trades?: unknown[]; charts?: unknown } | null {
+  if (typeof data !== "string") return null;
+  let m: any;
+  try { m = JSON.parse(data); } catch { return null; }
+  if (!m || typeof m !== "object" || typeof m.seq !== "number" || !Number.isFinite(m.seq)) return null;
+  if (m.type === "hello" || m.type === "ref") return m;
+  if (m.type === "batch" && Array.isArray(m.markets) && Array.isArray(m.trades)) return m;
+  return null;
+}
+
 const HEARTBEAT_MAX_AGE_MS = 60_000;
 const STALE_AFTER_MS = 20_000;
 
@@ -35,6 +46,7 @@ export class FeedClient {
   private started = false;
   private backoff = 1000;
   private everConnected = false;
+  private discoverGen = 0;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   /** URL whose /health answered ok JSON recently: lets us connect before the next heartbeat lands. */
   private wokenUrl: string | null = null;
@@ -98,7 +110,7 @@ export class FeedClient {
     // Waking only happens on a visible page; pause on hide, re-check on return.
     document.addEventListener("visibilitychange", () => {
       if (this.isVisible()) void this.discover();
-      else if (this.waker.state === "waking") this.waker.cancel();
+      else if (this.waker.state === "waking") { this.waker.cancel(); this.onWake(); }
     });
     setInterval(() => {
       if (this.status === "connected" && Date.now() - this.lastMessageAt > STALE_AFTER_MS) {
@@ -123,7 +135,9 @@ export class FeedClient {
 
   private async discover() {
     // Security-definer lookup: latest heartbeat time/status/URL only, so a long-dead worker reads as "offline since", not "never".
+    const gen = ++this.discoverGen;
     const { data: rows, error } = await supabase.rpc("worker_service_status");
+    if (gen !== this.discoverGen) return; // a newer discovery started: never let an older heartbeat restore an old URL
     this.lastCheckAt = Date.now();
     const data = rows?.[0] ?? null;
     if (error) {
@@ -134,6 +148,11 @@ export class FeedClient {
     const hb = data?.last_heartbeat_at ? new Date(data.last_heartbeat_at).getTime() : null;
     this.lastHeartbeatAt = hb;
     const alive = hb != null && Date.now() - hb < HEARTBEAT_MAX_AGE_MS;
+    if (!this.safe(data?.public_url) || hb == null) {
+      // Current heartbeat has no usable URL: drop obsolete wake/reconnect work so a pending old result can't connect.
+      this.waker.cancel(); this.wokenUrl = null;
+      if (this.reconnectTimer) { clearTimeout(this.reconnectTimer); this.reconnectTimer = null; }
+    }
     if (!data || hb == null) this.setup("never", "The live market service has never checked in. It must be deployed and running before launches can stream.");
     else if (!data.public_url) this.setup("no_url", "The market service is checking in but has no PUBLIC_URL set, so the browser cannot stream from it.");
     else if (!this.safe(data.public_url)) this.setup("no_url", "The market service's PUBLIC_URL is not a safe public https address, so the browser will not contact it.");
@@ -164,7 +183,9 @@ export class FeedClient {
     if (this.status !== "setup") this.status = this.everConnected ? "reconnecting" : "connecting";
     const ws = new WebSocket(this.workerUrl.replace(/^http/, "ws") + "/ws");
     this.ws = ws;
+    const current = () => this.ws === ws;
     ws.onopen = async () => {
+      if (!current()) return;
       // Backoff/failure counters reset only on real data (onmessage): a socket the worker opens then rejects must not loop forever.
       const wasConnected = this.everConnected;
       // Socket open is not "Live": wait for the first real message from the worker.
@@ -172,16 +193,18 @@ export class FeedClient {
       const topics = [...this.topics.keys()];
       if (topics.length) ws.send(JSON.stringify({ op: "sub", topics }));
       // Events missed while disconnected cannot be replayed: refresh the snapshot and say so.
-      await this.loadSnapshot();
-      for (const t of topics) if (t.startsWith("market:")) await this.loadMarket(t.slice(7));
+      await this.loadSnapshot(current);
+      for (const t of topics) if (t.startsWith("market:") && current()) await this.loadMarket(t.slice(7), current);
+      if (!current()) return;
       if (wasConnected) this.gapNotice = `Reconnected at ${new Date().toLocaleTimeString()} — snapshot refreshed; swaps during the gap may be missing from the tape.`;
       this.notify();
     };
     ws.onmessage = (ev) => {
+      if (!current()) return; // late message from a replaced socket
+      const msg: any = parseWorkerMessage(ev.data);
+      if (!msg) return; // malformed/unknown: never marks Live
       this.lastMessageAt = Date.now();
       if (this.status !== "connected") { this.status = "connected"; this.everConnected = true; this.backoff = 1000; this.wsFailures = 0; this.setupKind = null; this.waker.cancel(); }
-      let msg: any;
-      try { msg = JSON.parse(ev.data); } catch { return; }
       if (msg.reference) this.reference = msg.reference;
       if (typeof msg.seq === "number") this.seq = msg.seq;
       if (msg.type === "batch") {
@@ -215,11 +238,13 @@ export class FeedClient {
     };
   }
 
-  async loadSnapshot() {
-    if (!this.workerUrl) return;
+  async loadSnapshot(stillCurrent: () => boolean = () => true) {
+    const url = this.workerUrl;
+    if (!url) return;
     try {
-      const r = await fetch(`${this.workerUrl}/api/snapshot`);
+      const r = await fetch(`${url}/api/snapshot`);
       const j = await r.json();
+      if (!stillCurrent() || this.workerUrl !== url) return;
       this.reference = j.reference;
       this.seq = j.seq;
       for (const m of j.markets as MarketSummary[]) this.markets.set(m.id, m);
@@ -227,11 +252,13 @@ export class FeedClient {
     } catch { /* surfaced through status */ }
   }
 
-  async loadMarket(id: string) {
-    if (!this.workerUrl) return null;
-    const r = await fetch(`${this.workerUrl}/api/markets/${encodeURIComponent(id)}`);
+  async loadMarket(id: string, stillCurrent: () => boolean = () => true) {
+    const url = this.workerUrl;
+    if (!url) return null;
+    const r = await fetch(`${url}/api/markets/${encodeURIComponent(id)}`);
     if (!r.ok) return null;
     const j = await r.json();
+    if (!stillCurrent() || this.workerUrl !== url) return null;
     this.reference = j.reference;
     for (const m of [j.market, ...(j.siblings ?? [])] as MarketSummary[]) this.markets.set(m.id, m);
     this.tapes.set(id, j.tape ?? []);

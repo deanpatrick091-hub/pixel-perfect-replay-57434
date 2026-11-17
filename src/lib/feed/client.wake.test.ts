@@ -45,7 +45,7 @@ describe("FeedClient cold-start wake", () => {
     expect(c.status).toBe("connecting");
     FakeWS.all[0]!.onopen!(); await tick();
     expect(c.status).not.toBe("connected");
-    FakeWS.all[0]!.onmessage!({ data: JSON.stringify({ type: "batch", markets: [], trades: [] }) });
+    FakeWS.all[0]!.onmessage!({ data: JSON.stringify({ type: "batch", seq: 1, markets: [], trades: [] }) });
     expect(c.status).toBe("connected");
     await tick(15_000);
     expect(FakeWS.all).toHaveLength(1);
@@ -106,7 +106,7 @@ describe("FeedClient cold-start wake", () => {
     expect(FakeWS.all).toHaveLength(1);
     expect(fetchMock.mock.calls.some(([u]) => String(u).endsWith("/health"))).toBe(false);
     FakeWS.all[0]!.onopen!(); await tick();
-    FakeWS.all[0]!.onmessage!({ data: JSON.stringify({ type: "batch", markets: [], trades: [] }) });
+    FakeWS.all[0]!.onmessage!({ data: JSON.stringify({ type: "batch", seq: 1, markets: [], trades: [] }) });
     expect(c.status).toBe("connected");
   });
 
@@ -122,5 +122,64 @@ describe("FeedClient cold-start wake", () => {
       ws.onclose!(); await tick(20_000);
     }
     expect(c.setupKind).toBe("unreachable");
+  });
+
+  it("late messages from a replaced socket are ignored", async () => {
+    rpc.mockResolvedValueOnce(hb(5_000, "https://a.onrender.com")).mockResolvedValue(hb(5_000, "https://b.onrender.com"));
+    vi.stubGlobal("fetch", vi.fn(async (_u: string) => new Response("{}", { status: 500 })));
+    const c = await client();
+    c.start(); await tick();
+    const oldWs = FakeWS.all[0]!;
+    await tick(15_000);
+    expect(FakeWS.all).toHaveLength(2); expect(oldWs.closed).toBe(true);
+    oldWs.onopen!(); oldWs.onmessage!({ data: JSON.stringify({ type: "batch", seq: 9, markets: [{ id: "old" }], trades: [] }) });
+    expect(c.status).not.toBe("connected"); expect(c.markets.has("old")).toBe(false); expect(c.seq).toBe(0);
+  });
+
+  it("malformed or unknown messages never mark Live", async () => {
+    rpc.mockResolvedValue(hb(5_000));
+    vi.stubGlobal("fetch", vi.fn(async (_u: string) => new Response("{}", { status: 500 })));
+    const c = await client();
+    c.start(); await tick();
+    const ws = FakeWS.all[0]!; ws.onopen!(); await tick();
+    for (const data of ["not json", "{}", JSON.stringify({ type: "evil", seq: 1 }), JSON.stringify({ type: "batch", seq: 1 }), JSON.stringify({ type: "hello" })]) ws.onmessage!({ data });
+    expect(c.status).not.toBe("connected");
+    ws.onmessage!({ data: JSON.stringify({ type: "hello", seq: 3, reference: null }) });
+    expect(c.status).toBe("connected");
+  });
+
+  it("an older slow heartbeat response cannot restore an old URL", async () => {
+    let resolveOld!: (v: unknown) => void;
+    rpc.mockImplementationOnce(() => new Promise((r) => { resolveOld = r; })).mockResolvedValue(hb(5_000, "https://new.onrender.com"));
+    vi.stubGlobal("fetch", vi.fn(async (_u: string) => new Response("{}", { status: 500 })));
+    const c = await client();
+    c.start(); await tick();
+    c.retry(); await tick();
+    expect(c.workerUrl).toBe("https://new.onrender.com");
+    resolveOld(hb(5_000, "https://old.onrender.com")); await tick();
+    expect(c.workerUrl).toBe("https://new.onrender.com");
+    expect(FakeWS.all.every((w) => w.url.includes("new"))).toBe(true);
+  });
+
+  it("URL removed while a wake health check is in flight: late ok never connects", async () => {
+    rpc.mockResolvedValueOnce(hb(4 * 3600_000)).mockResolvedValue({ data: [{ last_heartbeat_at: new Date(Date.now() - 4 * 3600_000).toISOString(), status: "ok", public_url: null }], error: null });
+    let resolveHealth!: (r: Response) => void;
+    vi.stubGlobal("fetch", vi.fn((_u: string) => new Promise<Response>((r) => { resolveHealth = r; })));
+    const c = await client();
+    c.start(); await tick();
+    expect(c.setupKind).toBe("waking");
+    await tick(15_000); // periodic discovery sees the URL removed while /health is still pending
+    resolveHealth(okJson()); await tick(30_000);
+    expect(FakeWS.all).toHaveLength(0); expect(c.setupKind).toBe("no_url");
+  });
+
+  it("hiding the tab while waking shows the paused state", async () => {
+    rpc.mockResolvedValue(hb(4 * 3600_000));
+    vi.stubGlobal("fetch", vi.fn(async (_u: string) => new Response("", { status: 503 })));
+    const c = await client();
+    c.start(); await tick();
+    expect(c.setupKind).toBe("waking");
+    visibility = "hidden"; document.dispatchEvent(new Event("visibilitychange")); await tick();
+    expect(c.setupKind).toBe("offline"); expect(c.setupReason).toMatch(/Paused/);
   });
 });
