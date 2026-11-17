@@ -267,10 +267,14 @@ export class FeedClient {
   }
 
   async candles(id: string, tf: string) {
-    if (!this.workerUrl) return null;
-    const r = await fetch(`${this.workerUrl}/api/candles?market=${encodeURIComponent(id)}&tf=${tf}`);
-    if (!r.ok) return null;
-    return (await r.json()) as { candles: import("./types").Candle[]; note: string; historyFrom: number | null; quoteCcy: string | null };
+    const url = this.workerUrl;
+    if (!url) return null;
+    try {
+      const r = await fetch(`${url}/api/candles?market=${encodeURIComponent(id)}&tf=${tf}`);
+      if (!r.ok) return null;
+      const j = (await r.json()) as { candles: import("./types").Candle[]; note: string; historyFrom: number | null; quoteCcy: string | null };
+      return this.workerUrl === url ? j : null; // reply from a previous worker host: drop it
+    } catch { return null; }
   }
 
   /** Subscribe to "new verified swaps" nudges for a market (sent over the existing worker socket). */
@@ -283,16 +287,19 @@ export class FeedClient {
 
   /** Read-only on-chain history (chart only). Returns null on network failure/timeout so callers keep their last snapshot. */
   async history(id: string, tf: string, signal?: AbortSignal, opts: { retry?: boolean } = {}) {
-    if (!this.workerUrl) return null;
+    const url = this.workerUrl;
+    if (!url || signal?.aborted) return null;
     // Own timeout (not AbortSignal.any/timeout, which older iOS Safari lacks) so a suspended request can't hang polling.
     const ctl = new AbortController();
     const onAbort = () => ctl.abort();
     signal?.addEventListener("abort", onAbort);
     const t = setTimeout(() => ctl.abort(), 15_000);
     try {
-      const r = await fetch(`${this.workerUrl}/api/history?market=${encodeURIComponent(id)}&tf=${encodeURIComponent(tf)}${opts.retry ? "&retry=1" : ""}`, { signal: ctl.signal, cache: "no-store" });
+      const r = await fetch(`${url}/api/history?market=${encodeURIComponent(id)}&tf=${encodeURIComponent(tf)}${opts.retry ? "&retry=1" : ""}`, { signal: ctl.signal, cache: "no-store" });
       if (!r.ok) return null;
-      return (await r.json()) as import("./types").ChartHistory;
+      const j = (await r.json()) as import("./types").ChartHistory;
+      // The worker host changed while this was in flight: never let the old host's reply be merged or cached.
+      return this.workerUrl === url && !signal?.aborted ? j : null;
     } catch { return null; } finally { clearTimeout(t); signal?.removeEventListener("abort", onAbort); }
   }
 

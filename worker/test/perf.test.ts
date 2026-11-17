@@ -53,3 +53,24 @@ test("service: one round decodes the newest window first and only a bounded slic
   const older = h.prios.filter(([m, p]) => m.startsWith("P") && p === 2).length;
   assert.ok(older > 0 && older <= BACKFILL_TX_PER_REFRESH * 4, `backfill per kick bounded (got ${older})`); // MAX_AGAIN rounds at most
 });
+
+test("rpc: long or HTTP-date Retry-After is honored in full and overlapping cooldowns never shorten it", async () => {
+  let ra = "600";
+  const c = createRpc({ url: "x", maxRps: 1000, fetch: (async () => new Response("", { status: 429, headers: { "retry-after": ra } })) as any });
+  await assert.rejects(c.rpc("getTransaction", ["a"]));
+  assert.ok(c.cooldownUntil() - Date.now() >= 599_000, "600s is not truncated to the local 120s cap");
+  const d = createRpc({ url: "x", maxRps: 1000, fetch: (async () => new Response("", { status: 429, headers: { "retry-after": ra } })) as any });
+  ra = new Date(Date.now() + 300_000).toUTCString();
+  await assert.rejects(d.rpc("getTransaction", ["a"]));
+  const until = d.cooldownUntil();
+  assert.ok(until - Date.now() >= 298_000, "HTTP-date parsed");
+  // two overlapping requests: the long Retry-After lands first, then a header-less 429 must not pull it in
+  let n = 0;
+  const e = createRpc({ url: "x", maxRps: 1000, maxConcurrent: 2, fetch: (async () => {
+    const k = n++; await new Promise((r) => setTimeout(r, k === 0 ? 1 : 20));
+    return new Response("", { status: 429, headers: k === 0 ? { "retry-after": "600" } : {} });
+  }) as any });
+  await Promise.allSettled([e.rpc("m", ["1"]), e.rpc("m", ["2"])]);
+  assert.equal(n, 2);
+  assert.ok(e.cooldownUntil() - Date.now() >= 599_000, "second, shorter cooldown did not shorten the first");
+});

@@ -8,11 +8,12 @@ import type { Candle } from "./types";
  * real cached candles instantly (flagged `cached` until a fresh response for that key arrives).
  */
 const CACHE_MAX = 60;
-const cache = new Map<string, { data: ChartHistory; fetchedAt: number }>();
+type Cached = { data: ChartHistory; fetchedAt: number; latest: ChartHistory | null };
+const cache = new Map<string, Cached>();
 const TF_SEC = INTERVALS;
 export function clearHistoryCache() { cache.clear(); }
-function remember(key: string, data: ChartHistory, fetchedAt: number) {
-  cache.delete(key); cache.set(key, { data, fetchedAt });
+function remember(key: string, data: ChartHistory, fetchedAt: number, latest: ChartHistory | null) {
+  cache.delete(key); cache.set(key, { data, fetchedAt, latest });
   if (cache.size > CACHE_MAX) cache.delete(cache.keys().next().value as string);
 }
 /** Exact re-bucketing of finer epoch-aligned candles into a coarser interval that it divides (same swap set). */
@@ -31,12 +32,12 @@ export function rebucket(candles: Candle[], fromSec: number, toSec: number): Can
   return out;
 }
 /** Cached snapshot for this key, else one derived exactly from a cached finer timeframe of the same market. */
-export function cachedSnapshot(marketId: string, tf: string): { data: ChartHistory; fetchedAt: number } | null {
+export function cachedSnapshot(marketId: string, tf: string): Cached | null {
   const hit = cache.get(`${marketId}|${tf}`);
   if (hit) return hit;
   const to = TF_SEC[tf];
   if (!to) return null;
-  let best: { data: ChartHistory; fetchedAt: number; from: number } | null = null;
+  let best: (Cached & { from: number }) | null = null;
   for (const [k, v] of cache) {
     const [m, f] = [k.slice(0, k.lastIndexOf("|")), k.slice(k.lastIndexOf("|") + 1)];
     const from = TF_SEC[f];
@@ -45,7 +46,8 @@ export function cachedSnapshot(marketId: string, tf: string): { data: ChartHisto
   }
   if (!best) return null;
   const candles = rebucket(best.data.candles, best.from, to);
-  return candles ? { data: { ...best.data, tf, candles }, fetchedAt: best.fetchedAt } : null;
+  // The source's latest failure/status is per market, so it carries over; its own candles are not re-bucketed.
+  return candles ? { data: { ...best.data, tf, candles }, fetchedAt: best.fetchedAt, latest: best.latest ? { ...best.latest, tf, candles: [] } : null } : null;
 }
 
 export type HistoryFetcher = (marketId: string, tf: string, signal: AbortSignal, opts?: { retry?: boolean }) => Promise<ChartHistory | null>;
@@ -94,7 +96,7 @@ export function pollDelay(valid: ChartHistory | null, errStreak: number) {
 const empty = (key: string): Snap => ({ key, data: null, netErr: false, latest: null, fetchedAt: null, cached: false });
 const initial = (key: string, marketId: string, tf: string): Snap => {
   const c = cachedSnapshot(marketId, tf);
-  return c ? { ...empty(key), data: c.data, fetchedAt: c.fetchedAt, cached: true } : empty(key);
+  return c ? { ...empty(key), data: c.data, fetchedAt: c.fetchedAt, latest: c.latest, cached: true } : empty(key);
 };
 
 /**
@@ -135,9 +137,12 @@ export function useChartHistory(marketId: string, tf: string, fetcher: HistoryFe
       setSnap((p) => {
         if (p.key !== key) return p;
         if (!valid) return { ...p, netErr: true };
-        const merged = mergeSnapshot(p.data, valid), at = Date.now();
-        remember(key, merged.data, at);
-        return { key, ...merged, netErr: false, fetchedAt: at, cached: false };
+        const merged = mergeSnapshot(p.data, valid);
+        // Only an accepted whole snapshot is fresh; retained data keeps its original age and cached flag.
+        const accepted = merged.data === valid;
+        const at = accepted || p.fetchedAt == null ? Date.now() : p.fetchedAt;
+        remember(key, merged.data, at, merged.latest);
+        return { key, ...merged, netErr: false, fetchedAt: at, cached: accepted ? false : p.cached };
       });
       schedule(again ? 0 : pollDelay(valid, errStreak));
     };

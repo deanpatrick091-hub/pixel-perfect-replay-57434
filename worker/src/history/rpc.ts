@@ -1,5 +1,6 @@
 import { config } from "../config.ts";
 import { log } from "../log.ts";
+import { parseRetryAfter } from "../retryAfter.ts";
 
 // Shared Solana JSON-RPC client with one hard global budget for all chart-history work.
 // Public mainnet RPC documents ~100 req/10s per IP and 40 req/10s per method; we stay well below that,
@@ -60,7 +61,8 @@ export function createRpc(o: RpcOptions) {
     gap = Math.min(Math.round(gap * 1.5), baseGap * 4); okStreak = 0; stats.budgetRps = 1000 / gap;
     if (kind === "forbidden") penalty = Math.max(penalty, base);
     // Never resume before the provider's Retry-After (retrying early only earns another 429).
-    cooldownUntil = now() + Math.max(penalty, Math.min(retryAfterMs, cap)); cooldownReason = kind;
+    // Local backoff is capped; the provider's Retry-After is honored in full. Overlapping cooldowns only extend.
+    cooldownUntil = Math.max(cooldownUntil, now() + Math.max(penalty, retryAfterMs)); cooldownReason = kind;
     stats.cooldownUntil = cooldownUntil; stats.cooldownReason = kind;
     // Queued work is released with the same backoff error instead of waiting on a held slot.
     for (const w of queue.splice(0)) w.fail(kind === "forbidden" ? new RpcForbidden(cooldownUntil) : new RpcLimited(429, cooldownUntil));
@@ -104,8 +106,7 @@ export function createRpc(o: RpcOptions) {
     if (rem != null && rem !== "" && Number(rem) <= 0) { methodBlockedUntil.set(method, now() + METHOD_WINDOW_MS); stats.methodHolds++; }
   }
   function retryAfter(r: Response) {
-    const v = Number(r.headers?.get?.("retry-after"));
-    return Number.isFinite(v) && v > 0 ? v * 1000 : 0;
+    return parseRetryAfter(r.headers?.get?.("retry-after") ?? null, now()) ?? 0;
   }
   async function once<T>(method: string, params: unknown[]): Promise<T> {
     stats.requests++;
@@ -123,7 +124,7 @@ export function createRpc(o: RpcOptions) {
     }
     learnLimit(method, r);
     if (r.status === 429) { stats.limited++; stats.lastLimitedAt = now(); startCooldown("rate_limited", retryAfter(r)); throw new RpcLimited(429, cooldownUntil); }
-    if (r.status === 403) { stats.forbidden++; startCooldown("forbidden"); throw new RpcForbidden(cooldownUntil); }
+    if (r.status === 403) { stats.forbidden++; startCooldown("forbidden", retryAfter(r)); throw new RpcForbidden(cooldownUntil); }
     if (r.status >= 500) throw new RpcTransport("http", `${method} HTTP ${r.status}`);
     if (!r.ok) { stats.rpcErrors++; throw new RpcError(r.status, `HTTP ${r.status}`); }
     let j: any;

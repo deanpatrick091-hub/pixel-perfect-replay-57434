@@ -183,3 +183,30 @@ describe("FeedClient cold-start wake", () => {
     expect(c.setupKind).toBe("offline"); expect(c.setupReason).toMatch(/Paused/);
   });
 });
+
+describe("FeedClient chart requests across worker URL changes", () => {
+  it("history() and candles() drop a reply that arrives after the worker URL changed", async () => {
+    const c = await client();
+    c.workerUrl = URL_;
+    let release: (r: Response) => void = () => {};
+    vi.stubGlobal("fetch", vi.fn(() => new Promise<Response>((r) => { release = r; })));
+    const h = c.history("M", "1m");
+    c.workerUrl = "https://other.onrender.com";
+    release(new Response(JSON.stringify({ market: "M", tf: "1m", candles: [] }), { status: 200 }));
+    expect(await h).toBeNull();
+    c.workerUrl = URL_;
+    const k = c.candles("M", "1m");
+    c.workerUrl = null;
+    release(new Response(JSON.stringify({ candles: [], note: "" }), { status: 200 }));
+    expect(await k).toBeNull();
+  });
+
+  it("history() with an already-aborted signal sends nothing", async () => {
+    const c = await client();
+    c.workerUrl = URL_;
+    const f = vi.fn(); vi.stubGlobal("fetch", f);
+    const ac = new AbortController(); ac.abort();
+    expect(await c.history("M", "1m", ac.signal)).toBeNull();
+    expect(f).not.toHaveBeenCalled();
+  });
+});

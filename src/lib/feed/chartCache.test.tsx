@@ -61,3 +61,43 @@ describe("chart snapshot cache", () => {
     expect(cachedSnapshot("solana:pool:A", "1s")).toBeNull(); // coarser never becomes finer
   });
 });
+
+describe("cache freshness on retained snapshots", () => {
+  it("a transient empty reply keeps the original age, records latest in the cache, and stays labelled cached", async () => {
+    vi.useFakeTimers();
+    const b = swaps();
+    const good = vi.fn<HistoryFetcher>(async (m, tf) => hist(m, tf, b.candles(60), 3));
+    const first = renderHook(() => useChartHistory("solana:pool:R", "1m", good, true));
+    await flush();
+    const at = first.result.current.fetchedAt;
+    first.unmount();
+    await act(async () => { await vi.advanceTimersByTimeAsync(60_000); });
+    const limited: ChartHistory = { ...hist("solana:pool:R", "1m", [], 3), state: "rate_limited", error: "429", instance: "w2" };
+    const again = renderHook(() => useChartHistory("solana:pool:R", "1m", vi.fn<HistoryFetcher>(async () => limited), true));
+    await flush();
+    expect(again.result.current.data?.version).toBe(3);
+    expect(again.result.current.fetchedAt).toBe(at);
+    expect(again.result.current.cached).toBe(true);
+    expect(again.result.current.latest?.state).toBe("rate_limited");
+    expect(cachedSnapshot("solana:pool:R", "1m")?.fetchedAt).toBe(at);
+    expect(cachedSnapshot("solana:pool:R", "1m")?.latest?.state).toBe("rate_limited");
+  });
+
+  it("an older same-instance revision keeps the original age; a newer accepted one refreshes it", async () => {
+    vi.useFakeTimers();
+    const b = swaps();
+    let v = 5;
+    const f = vi.fn<HistoryFetcher>(async (m, tf) => hist(m, tf, b.candles(60), v));
+    const r = renderHook(() => useChartHistory("solana:pool:V", "1m", f, true));
+    await flush();
+    const at = r.result.current.fetchedAt!;
+    v = 4;
+    await act(async () => { r.result.current.retry(); await vi.advanceTimersByTimeAsync(1_000); });
+    expect(r.result.current.data?.version).toBe(5);
+    expect(r.result.current.fetchedAt).toBe(at);
+    v = 6;
+    await act(async () => { r.result.current.retry(); await vi.advanceTimersByTimeAsync(1_000); });
+    expect(r.result.current.data?.version).toBe(6);
+    expect(r.result.current.fetchedAt!).toBeGreaterThan(at);
+  });
+});
