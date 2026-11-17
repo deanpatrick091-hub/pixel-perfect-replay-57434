@@ -1,5 +1,6 @@
 import { useEffect, useSyncExternalStore } from "react";
 import { supabase } from "@/integrations/supabase/client";
+import { ServiceWaker, safeServiceUrl } from "./wake";
 import type { FeedStatus, MarketSummary, Reference, Trade } from "./types";
 
 // Browser connection to the market worker. Snapshot first, then apply batched updates.
@@ -8,7 +9,7 @@ import type { FeedStatus, MarketSummary, Reference, Trade } from "./types";
 const HEARTBEAT_MAX_AGE_MS = 60_000;
 const STALE_AFTER_MS = 20_000;
 
-class FeedClient {
+export class FeedClient {
   status: FeedStatus = "checking";
   workerUrl: string | null = null;
   lastHeartbeatAt: number | null = null;
@@ -21,7 +22,7 @@ class FeedClient {
   gapNotice: string | null = null;
   setupReason = "Checking for the live market service…";
   /** Why the feed isn't live: never seen, heartbeat stopped, misconfigured, status unreadable, or socket unreachable. */
-  setupKind: "never" | "offline" | "no_url" | "read_error" | "unreachable" | null = null;
+  setupKind: "never" | "offline" | "no_url" | "read_error" | "unreachable" | "waking" | null = null;
   lastCheckAt: number | null = null;
   private wsFailures = 0;
   version = 0;
@@ -34,6 +35,45 @@ class FeedClient {
   private started = false;
   private backoff = 1000;
   private everConnected = false;
+  private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  /** URL whose /health answered ok JSON recently: lets us connect before the next heartbeat lands. */
+  private wokenUrl: string | null = null;
+  private wokenAt = 0;
+  private wakeFailedUrl: string | null = null;
+  waker = new ServiceWaker(
+    { fetch: (...a) => fetch(...a), isVisible: () => typeof document === "undefined" || document.visibilityState === "visible" },
+    () => this.onWake(),
+  );
+
+  private isVisible() { return typeof document === "undefined" || document.visibilityState === "visible"; }
+  private safe(url: string | null | undefined) {
+    return safeServiceUrl(url, { allowLocalHttp: !import.meta.env.PROD });
+  }
+  private reachable() {
+    const hbAlive = this.lastHeartbeatAt != null && Date.now() - this.lastHeartbeatAt < HEARTBEAT_MAX_AGE_MS;
+    return hbAlive || (this.wokenUrl != null && this.wokenUrl === this.workerUrl && Date.now() - this.wokenAt < HEARTBEAT_MAX_AGE_MS);
+  }
+
+  private onWake() {
+    const w = this.waker;
+    if (w.state === "waking") {
+      this.setup("waking", `Starting market service… the free host may take about a minute to wake up.${w.attempts > 1 && w.lastError ? ` (attempt ${w.attempts} of ${w.maxAttempts}: ${w.lastError})` : ""}`);
+    } else if (w.state === "ready" && w.url) {
+      this.wokenUrl = w.url; this.wokenAt = Date.now(); this.wakeFailedUrl = null;
+      this.workerUrl = w.url;
+      this.status = "connecting"; this.setupKind = null; this.setupReason = "Market service is up — connecting…";
+      this.waker.cancel();
+      this.backoff = 1000; this.wsFailures = 0;
+      this.connect();
+      void this.discover();
+    } else if (w.state === "idle" && this.setupKind === "waking") {
+      this.setup("offline", "Paused starting the market service while this page is hidden. It resumes when you come back.");
+    } else if (w.state === "failed") {
+      this.wakeFailedUrl = w.url;
+      this.setup("offline", `Tried to start the market service but it did not respond (${w.lastError ?? "no response"}) after ${w.attempts} attempts. Last check-in ${this.lastHeartbeatAt ? new Date(this.lastHeartbeatAt).toLocaleString() : "unknown"}. Use Retry now to try again.`);
+    }
+    this.notify();
+  }
 
   subscribe = (l: () => void) => {
     this.listeners.add(l);
@@ -55,6 +95,11 @@ class FeedClient {
     this.started = true;
     void this.discover();
     setInterval(() => void this.discover(), 15_000);
+    // Waking only happens on a visible page; pause on hide, re-check on return.
+    document.addEventListener("visibilitychange", () => {
+      if (this.isVisible()) void this.discover();
+      else if (this.waker.state === "waking") this.waker.cancel();
+    });
     setInterval(() => {
       if (this.status === "connected" && Date.now() - this.lastMessageAt > STALE_AFTER_MS) {
         this.status = "stale";
@@ -67,7 +112,8 @@ class FeedClient {
   retry = () => {
     this.status = "checking"; this.setupReason = "Checking for the live market service…"; this.notify();
     this.backoff = 1000; this.wsFailures = 0;
-    if (this.workerUrl && !this.ws) this.connect();
+    this.wakeFailedUrl = null; this.waker.cancel();
+    if (this.workerUrl && !this.ws && this.reachable()) this.connect();
     void this.discover();
   };
 
@@ -90,12 +136,22 @@ class FeedClient {
     const alive = hb != null && Date.now() - hb < HEARTBEAT_MAX_AGE_MS;
     if (!data || hb == null) this.setup("never", "The live market service has never checked in. It must be deployed and running before launches can stream.");
     else if (!data.public_url) this.setup("no_url", "The market service is checking in but has no PUBLIC_URL set, so the browser cannot stream from it.");
-    else if (!alive && !this.ws) this.setup("offline", `The market service last checked in ${new Date(hb).toLocaleString()} and is offline. Its host must be running again before live data returns.`);
-    else if (this.status === "setup" && this.setupKind !== "unreachable") { this.status = "checking"; this.setupKind = null; }
-    if (data?.public_url && alive) {
-      const url = data.public_url.replace(/\/$/, "");
-      const changed = url !== this.workerUrl;
-      this.workerUrl = url;
+    else if (!this.safe(data.public_url)) this.setup("no_url", "The market service's PUBLIC_URL is not a safe public https address, so the browser will not contact it.");
+    else if (!alive && !this.ws) {
+      const url = this.safe(data.public_url)!;
+      if (this.waker.url && this.waker.url !== url) this.waker.cancel(); // URL changed: drop obsolete retries
+      if (this.wokenUrl === url && this.reachable()) { /* just woke: connection already under way */ }
+      else if (this.wakeFailedUrl === url) { /* keep the failure message until Retry now */ }
+      else if (this.isVisible()) this.waker.wake(url);
+      else this.setup("offline", `The market service last checked in ${new Date(hb).toLocaleString()} and appears to be asleep. It will be started when this page is visible.`);
+    }
+    else if (this.status === "setup" && this.setupKind !== "unreachable" && this.setupKind !== "waking") { this.status = "checking"; this.setupKind = null; }
+    const safeUrl = this.safe(data?.public_url);
+    if (safeUrl && (alive || (this.wokenUrl === safeUrl && this.reachable()))) {
+      if (this.waker.state !== "idle") this.waker.cancel();
+      if (this.setupKind === "waking") { this.status = this.ws ? this.status : "checking"; this.setupKind = null; }
+      const changed = safeUrl !== this.workerUrl;
+      this.workerUrl = safeUrl;
       if (changed || (!this.ws && this.setupKind !== "unreachable")) this.connect();
     }
     this.notify();
@@ -103,6 +159,7 @@ class FeedClient {
 
   private connect() {
     if (!this.workerUrl) return;
+    if (this.reconnectTimer) { clearTimeout(this.reconnectTimer); this.reconnectTimer = null; }
     if (this.ws) { const old = this.ws; this.ws = null; old.close(); }
     if (this.status !== "setup") this.status = this.everConnected ? "reconnecting" : "connecting";
     const ws = new WebSocket(this.workerUrl.replace(/^http/, "ws") + "/ws");
@@ -111,8 +168,8 @@ class FeedClient {
       this.backoff = 1000; this.wsFailures = 0; this.setupKind = null;
       const wasConnected = this.everConnected;
       this.everConnected = true;
-      this.status = "connected";
-      this.lastMessageAt = Date.now();
+      // Socket open is not "Live": wait for the first real message from the worker.
+      if (this.status === "setup") { this.status = "connecting"; }
       const topics = [...this.topics.keys()];
       if (topics.length) ws.send(JSON.stringify({ op: "sub", topics }));
       // Events missed while disconnected cannot be replayed: refresh the snapshot and say so.
@@ -123,7 +180,7 @@ class FeedClient {
     };
     ws.onmessage = (ev) => {
       this.lastMessageAt = Date.now();
-      if (this.status === "stale") this.status = "connected";
+      if (this.status !== "connected") { this.status = "connected"; this.setupKind = null; this.waker.cancel(); }
       let msg: any;
       try { msg = JSON.parse(ev.data); } catch { return; }
       if (msg.reference) this.reference = msg.reference;
@@ -151,11 +208,11 @@ class FeedClient {
       if (!this.everConnected && this.wsFailures >= 3) this.setup("unreachable", `The market service checks in, but this browser can't open its live connection (${this.workerUrl}). Check its PUBLIC_URL and that ALLOWED_ORIGINS includes ${location.origin}.`);
       else if (this.status !== "setup") this.status = "reconnecting";
       this.notify();
-      const alive = this.lastHeartbeatAt != null && Date.now() - this.lastHeartbeatAt < HEARTBEAT_MAX_AGE_MS;
+      const alive = this.reachable();
       if (!alive) { this.setup("offline", `The market service stopped responding${this.lastHeartbeatAt ? ` (last check-in ${new Date(this.lastHeartbeatAt).toLocaleString()})` : ""}.`); this.notify(); return; }
       const wait = Math.min(this.backoff, 20_000);
       this.backoff *= 2;
-      setTimeout(() => this.connect(), wait);
+      this.reconnectTimer = setTimeout(() => { this.reconnectTimer = null; if (!this.ws) this.connect(); }, wait);
     };
   }
 

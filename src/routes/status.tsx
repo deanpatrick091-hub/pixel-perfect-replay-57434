@@ -38,7 +38,8 @@ function Status() {
           <div className="mb-2 flex items-center gap-3"><h1 className="text-sm font-semibold">Feed status</h1><StatusDot status={feed.status} lastAt={feed.lastMessageAt} kind={feed.setupKind} /></div>
           {!hb ? (
             <p className="text-sm text-muted-foreground">
-              {feed.lastHeartbeatAt
+              {feed.setupKind === "waking" ? feed.setupReason
+                : feed.lastHeartbeatAt
                 ? `The market service is offline — last check-in ${new Date(feed.lastHeartbeatAt).toLocaleString()}. Detailed stats are only kept visible for a day; start the service again to see them.`
                 : feed.setupKind === "read_error" ? "Couldn't read the market service's status. Retrying automatically."
                 : feed.status === "checking" ? "Checking the market service…" : "The market service has never checked in. Follow the setup steps below."}

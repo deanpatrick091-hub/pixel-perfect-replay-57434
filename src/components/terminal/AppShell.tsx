@@ -95,6 +95,7 @@ const SETUP_TITLE = {
   no_url: "Live market service misconfigured",
   read_error: "Can't check the live market service",
   unreachable: "Can't reach the live market service",
+  waking: "Starting market service…",
 } as const;
 
 export function SetupState({ reason }: { reason: string }) {
@@ -105,7 +106,7 @@ export function SetupState({ reason }: { reason: string }) {
     <div className="grid h-full place-items-center p-6">
       <div className="panel max-w-lg p-5" role="status">
         <div className="mb-2 flex items-center gap-2">
-          <span className={checking ? "h-2 w-2 rounded-full bg-muted-foreground pulse-dot" : feed.setupKind === "offline" || feed.setupKind === "read_error" ? "h-2 w-2 rounded-full bg-down" : "h-2 w-2 rounded-full bg-warn"} />
+          <span className={checking || feed.setupKind === "waking" ? "h-2 w-2 rounded-full bg-muted-foreground pulse-dot" : feed.setupKind === "offline" || feed.setupKind === "read_error" ? "h-2 w-2 rounded-full bg-down" : "h-2 w-2 rounded-full bg-warn"} />
           <h2 className="text-sm font-semibold">{title}</h2>
         </div>
         {!checking && <p className="text-sm text-muted-foreground">{reason}</p>}
