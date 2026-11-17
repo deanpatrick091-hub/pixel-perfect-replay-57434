@@ -183,6 +183,30 @@ describe("mergeSnapshot after a worker restart", () => {
     const next = { ...h(9, 1060, 9000), instance: "w1", version: 6 };
     expect(mergeSnapshot(prev, next).data).toBe(next);
   });
+  it("same worker, strictly newer revision: a correction removing every candle applies", () => {
+    const prev = { ...h(1, 1000, 1000), instance: "w1", version: 5 };
+    const next = { ...snap("A", "1m", 0, "unavailable"), instance: "w1", version: 6, coverage: "in_progress" as const, missingTransactions: 1 };
+    expect(mergeSnapshot(prev, next)).toEqual({ data: next, latest: null });
+    expect(mergeSnapshot(prev, { ...next, state: "empty" })).toEqual({ data: { ...next, state: "empty" }, latest: null });
+  });
+  it("same worker, older revision: rejects rollback even if it claims more or newer swaps", () => {
+    const prev = { ...h(10, 1000, 9000), instance: "w1", version: 6 };
+    const next = { ...h(20, 500, 9060), instance: "w1", version: 5 };
+    expect(mergeSnapshot(prev, next)).toEqual({ data: prev, latest: null });
+    expect(mergeSnapshot(prev, { ...next, candles: [], swaps: 0, state: "unavailable" })).toEqual({ data: prev, latest: null });
+  });
+  it("same worker, same revision: transient empty retains the whole cached snapshot", () => {
+    const prev = { ...h(10, 1000, 9000), instance: "w1", version: 6 };
+    const next = { ...snap("A", "1m", 0, "unavailable"), instance: "w1", version: 6 };
+    expect(mergeSnapshot(prev, next)).toEqual({ data: prev, latest: next });
+  });
+  it("empty resets with changed or absent instance do not compare revision numbers", () => {
+    const prev = { ...h(10, 1000, 9000), instance: "w1", version: 6 };
+    for (const identity of [{ instance: "w2", version: 99 }, { version: 99 }]) {
+      const next = { ...snap("A", "1m", 0, "loading"), ...identity };
+      expect(mergeSnapshot(prev, next)).toEqual({ data: prev, latest: next });
+    }
+  });
   it("a different worker instance with a smaller later-starting snapshot is still treated as a restart", () => {
     const prev = { ...h(361, 1000, 9000), instance: "w1", version: 50 };
     expect(mergeSnapshot(prev, { ...h(20, 8000, 9000), instance: "w2", version: 3 }).data).toBe(prev);

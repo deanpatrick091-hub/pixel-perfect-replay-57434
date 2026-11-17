@@ -24,6 +24,12 @@ export function isRegressedReload(prev: ChartHistory, next: ChartHistory) {
     next.oldestTs > prev.oldestTs && (next.newestTs ?? 0) <= (prev.newestTs ?? 0);
 }
 export function mergeSnapshot(prev: ChartHistory | null, next: ChartHistory): { data: ChartHistory; latest: ChartHistory | null } {
+  // Revisions are comparable only within a known worker instance. Order them before
+  // candle retention: reconciliation may authoritatively remove the final swap.
+  if (prev?.instance && prev.instance === next.instance && prev.version != null && next.version != null) {
+    if (next.version < prev.version) return { data: prev, latest: null };
+    if (next.version > prev.version) return { data: next, latest: null };
+  }
   if (prev && prev.candles.length && !next.candles.length && TRANSIENT.includes(next.state)) return { data: prev, latest: next };
   // Keep the whole earlier snapshot (never mixed) until the reload catches up or brings a newer swap.
   if (prev && prev.candles.length && next.candles.length && isRegressedReload(prev, next)) return { data: prev, latest: next };
