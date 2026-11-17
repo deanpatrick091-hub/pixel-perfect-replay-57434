@@ -25,8 +25,8 @@ export function rebucket(candles: Candle[], fromSec: number, toSec: number): Can
     const t = Math.floor(c.t / toSec) * toSec;
     if (!cur || cur.t !== t) { cur = { ...c, t }; out.push(cur); continue; }
     cur.h = Math.max(cur.h, c.h); cur.l = Math.min(cur.l, c.l); cur.c = c.c; cur.v += c.v;
-    cur.buyVolume = cur.buyVolume != null && c.buyVolume != null ? cur.buyVolume + c.buyVolume : undefined;
-    cur.sellVolume = cur.sellVolume != null && c.sellVolume != null ? cur.sellVolume + c.sellVolume : undefined; cur.buys += c.buys; cur.sells += c.sells;
+    if (cur.buyVolume != null && c.buyVolume != null) cur.buyVolume += c.buyVolume; else delete cur.buyVolume;
+    if (cur.sellVolume != null && c.sellVolume != null) cur.sellVolume += c.sellVolume; else delete cur.sellVolume; cur.buys += c.buys; cur.sells += c.sells;
   }
   return out;
 }

@@ -1,6 +1,6 @@
 // Manual benchmark (not a test): measures first-candle and swap-count timings for one real market over free RPC.
-import { createRpc } from "./src/history/rpc.ts";
-import { createHistoryService } from "./src/history/service.ts";
+import { createRpc } from "../src/history/rpc.ts";
+import { createHistoryService } from "../src/history/service.ts";
 const log: string[] = []; const T = Date.now();
 const pool = process.argv[2], mint = process.argv[3], secs = Number(process.argv[4] ?? 40);
 const client = createRpc({ url: "https://api.mainnet-beta.solana.com", maxRps: Number(process.env.RPS ?? 2), maxQueue: 100, fetch: (async (u: any, init: any) => { const r = await fetch(u, init); const m = JSON.parse(init.body).method; log.push(`${((Date.now() - T) / 1000).toFixed(1)} ${m} ${r.status} rem=${r.headers.get("x-ratelimit-method-remaining")}`); return r; }) as any });
