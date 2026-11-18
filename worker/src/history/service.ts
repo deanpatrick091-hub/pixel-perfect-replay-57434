@@ -77,23 +77,28 @@ export interface HistoryDeps {
   live?: LiveView;
 }
 
-export type Support = { ok: true; curveStatus: Market["status"] } | { ok: false; state: "unsupported" | "unknown_market"; reason: string };
+/** Why a market can't be charted: venue, quote currency and chain/identity are distinct from (pending/failed) on-chain pool verification. */
+export type SupportCode = "unknown_market" | "unsupported_chain" | "unsupported_venue" | "unsupported_quote" | "identity_mismatch";
+export type SupportStatus = SupportCode | "supported" | "pool_verification_pending" | "pool_verification_failed" | "pool_verified";
+export type Support = { ok: true; curveStatus: Market["status"] } | { ok: false; state: "unsupported" | "unknown_market"; code: SupportCode; reason: string };
 
 export function checkSupport(m: Market | undefined, id: string): Support {
-  if (!m || m.id !== id) return { ok: false, state: "unknown_market", reason: "The connected market worker isn't tracking this market (it may have restarted), so its history can't be checked." };
-  if (m.chain !== "solana") return { ok: false, state: "unsupported", reason: "On-chain history is only implemented for Solana markets." };
+  const no = (code: SupportCode, reason: string): Support => ({ ok: false, state: code === "unknown_market" ? "unknown_market" : "unsupported", code, reason });
+  if (!m || m.id !== id) return no("unknown_market", "The connected market worker isn't tracking this market (it may have restarted), so its history can't be checked.");
+  if (m.chain !== "solana") return no("unsupported_chain", "On-chain history is only implemented for Solana markets.");
   if (m.kind === "amm") {
-    if (m.venue !== "pumpswap" || m.quoteCcy !== "SOL") return { ok: false, state: "unsupported", reason: "Only verified SOL-quoted PumpSwap pools have AMM chart history." };
-    try { new PublicKey(m.address); new PublicKey(m.mint); } catch { return { ok: false, state: "unsupported", reason: "Invalid PumpSwap pool or mint address." }; }
-    if (id !== marketId("solana", "amm", m.address)) return { ok: false, state: "unsupported", reason: "Market id does not match its pool address." };
+    if (m.venue !== "pumpswap") return no("unsupported_venue", `Unsupported venue: AMM chart history is implemented only for PumpSwap pools (this market is on ${m.venue}).`);
+    if (m.quoteCcy !== "SOL") return no("unsupported_quote", `Unsupported quote: only SOL-quoted PumpSwap pools are decoded (this pool is quoted in ${m.quoteCcy}).`);
+    try { new PublicKey(m.address); new PublicKey(m.mint); } catch { return no("identity_mismatch", "Invalid PumpSwap pool or mint address."); }
+    if (id !== marketId("solana", "amm", m.address)) return no("identity_mismatch", "Market id does not match its pool address.");
     return { ok: true, curveStatus: m.status };
   }
-  if (m.venue !== "pumpfun") return { ok: false, state: "unsupported", reason: `Chart history for ${m.venue} isn't implemented.` };
-  if (m.quoteCcy !== "SOL") return { ok: false, state: "unsupported", reason: `Only SOL-quoted curves are decoded (this one is quoted in ${m.quoteCcy}).` };
-  if (id !== marketId("solana", "curve", m.address)) return { ok: false, state: "unsupported", reason: "Market id does not match its curve address." };
+  if (m.venue !== "pumpfun") return no("unsupported_venue", `Unsupported venue: chart history for ${m.venue} curves isn't implemented.`);
+  if (m.quoteCcy !== "SOL") return no("unsupported_quote", `Unsupported quote: only SOL-quoted curves are decoded (this one is quoted in ${m.quoteCcy}).`);
+  if (id !== marketId("solana", "curve", m.address)) return no("identity_mismatch", "Market id does not match its curve address.");
   let pda: string | null = null;
   try { pda = bondingCurvePda(m.mint); } catch { /* invalid mint */ }
-  if (pda !== m.address) return { ok: false, state: "unsupported", reason: "Curve address does not match the Pump program's derived address for this mint." };
+  if (pda !== m.address) return no("identity_mismatch", "Curve address does not match the Pump program's derived address for this mint.");
   return { ok: true, curveStatus: m.status };
 }
 
@@ -469,7 +474,7 @@ export function createHistoryService(deps: HistoryDeps) {
   /** Coherent snapshot of cached history; kicks off a deduplicated background refresh when due. */
   function history(m: Market | undefined, id: string, intervalSec: number, opts: { retry?: boolean } = {}) {
     const sup = checkSupport(m, id);
-    if (!sup.ok) return { state: sup.state as HistoryState, error: sup.reason, candles: [] as Candle[], swaps: 0, lastSuccessAt: null, lastDataAt: null, completedAt: null, version: 0 };
+    if (!sup.ok) return { state: sup.state as HistoryState, support: { status: sup.code as SupportStatus, detail: sup.reason }, error: sup.reason, candles: [] as Candle[], swaps: 0, lastSuccessAt: null, lastDataAt: null, completedAt: null, version: 0 };
     if (!m) throw new Error("Supported history requires a market");
     const e = entry(m);
     e.lastUsed = now();
@@ -498,9 +503,15 @@ export function createHistoryService(deps: HistoryDeps) {
     else if (coverage === "complete") state = used ? "ok" : "empty";
     else if (coverage === "incomplete" && !used && e.transportFailedTx > 0 && e.scanned === 0) { state = "unavailable"; error = e.lastTxError ? `Solana RPC transaction requests failed (${e.lastTxError.message})` : "Solana RPC transaction requests failed"; }
     else state = "partial";
+    // Exact pool verification is never relaxed: pending (not yet checked / RPC retry) and failed (account isn't this PumpSwap pool) are reported apart from unsupported venue/quote.
+    const support: { status: SupportStatus; detail: string | null } = e.kind !== "amm" ? { status: "supported", detail: null }
+      : e.poolError ? { status: "pool_verification_failed", detail: e.poolError }
+      : e.pool ? { status: "pool_verified", detail: null }
+      : { status: "pool_verification_pending", detail: e.failure ? `Pool verification pending: ${e.failure.message}` : "Pool verification pending: checking the on-chain pool account, mints and vaults" };
+    if (e.poolError) error = support.detail;
     const liveState = deps.live?.state(e.curve) ?? "off";
     return {
-      marketKind: e.kind, poolVerified: e.kind === "amm" ? !!e.pool : undefined,
+      marketKind: e.kind, support, poolVerified: e.kind === "amm" ? !!e.pool : undefined,
       source: e.kind === "amm" ? "solana-rpc:pumpswap-buy-sell-event" : "solana-rpc:pump-trade-event",
       state, coverage, refreshing: !!e.inflight, candles, swaps: used, version: e.version, instance,
       provisionalSwaps: [...e.swaps.values()].filter((w) => w.provisional).length,
