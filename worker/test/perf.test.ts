@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { createRpc } from "../src/history/rpc.ts";
+import { createRpc, RpcLimited } from "../src/history/rpc.ts";
 import { BACKFILL_TX_PER_REFRESH } from "../src/history/service.ts";
 import { eventData, harness, sig, tx } from "./helpers.ts";
 
@@ -65,12 +65,31 @@ test("rpc: long or HTTP-date Retry-After is honored in full and overlapping cool
   const until = d.cooldownUntil();
   assert.ok(until - Date.now() >= 298_000, "HTTP-date parsed");
   // two overlapping requests: the long Retry-After lands first, then a header-less 429 must not pull it in
-  let n = 0;
-  const e = createRpc({ url: "x", maxRps: 1000, maxConcurrent: 2, fetch: (async () => {
-    const k = n++; await new Promise((r) => setTimeout(r, k === 0 ? 1 : 20));
-    return new Response("", { status: 429, headers: k === 0 ? { "retry-after": "600" } : {} });
-  }) as any });
-  await Promise.allSettled([e.rpc("m", ["1"]), e.rpc("m", ["2"])]);
-  assert.equal(n, 2);
-  assert.ok(e.cooldownUntil() - Date.now() >= 599_000, "second, shorter cooldown did not shorten the first");
+  let clock = 1_800_000_000_000;
+  const pending: Array<(response: Response) => void> = [];
+  const started: Array<() => void> = [];
+  const firstStarted = new Promise<void>((resolve) => { started.push(resolve); });
+  const secondStarted = new Promise<void>((resolve) => { started.push(resolve); });
+  const e = createRpc({ url: "x", maxRps: 1000, maxConcurrent: 2, now: () => clock, fetch: (() => new Promise<Response>((resolve) => {
+    pending.push(resolve);
+    started[pending.length - 1]?.();
+  })) as typeof fetch });
+  const first = e.rpc("m", ["1"]);
+  await firstStarted;
+  // Even maxRps: 1000 retains a 50ms minimum start gap. Hold the first
+  // response and advance the injected clock so both requests really start.
+  clock += 50;
+  const second = e.rpc("m", ["2"]);
+  await secondStarted;
+  assert.equal(pending.length, 2, "both requests are in flight before either rate-limit response");
+  pending[0]?.(new Response("", { status: 429, headers: { "retry-after": "600" } }));
+  await assert.rejects(first, RpcLimited);
+  const deadline = clock + 600_000;
+  assert.equal(e.cooldownUntil(), deadline, "the full provider deadline is retained");
+  clock += 20;
+  pending[1]?.(new Response("", { status: 429 }));
+  await assert.rejects(second, RpcLimited);
+  assert.equal(e.cooldownUntil(), deadline, "a later, shorter cooldown cannot shorten the first");
+  await assert.rejects(e.rpc("m", ["3"]), RpcLimited);
+  assert.equal(pending.length, 2, "new requests do not bypass the provider cooldown");
 });
