@@ -44,7 +44,7 @@ export function marketUsd(m: MarketSummary, ref: Reference | null) {
 export type HistoryState = "ok" | "partial" | "empty" | "loading" | "rate_limited" | "unavailable" | "unsupported" | "unknown_market";
 /** One coherent snapshot of polled, read-only on-chain history (never used for quotes or orders). */
 export interface ChartHistory {
-  market: string; tf: string; source: string; marketKind?: "curve" | "amm"; poolVerified?: boolean; delivery?: "polled" | "live+polled"; state: HistoryState; refreshing?: boolean; candles: Candle[]; swaps: number;
+  market: string; tf: string; source: string; marketKind?: "curve" | "amm"; poolVerified?: boolean; support?: { status: string; detail: string | null }; delivery?: "polled" | "live+polled"; state: HistoryState; refreshing?: boolean; candles: Candle[]; swaps: number;
   /** Swaps decoded from the live notification's PumpSwap logs, awaiting their transaction check. */
   provisionalSwaps?: number;
   /** Worker process id: same instance + newer version = authoritative revision, not a restart. */

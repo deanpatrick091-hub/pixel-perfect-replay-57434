@@ -49,6 +49,7 @@ export function PriceChart({ marketId, quoteCcy, tick, liveTrades, headerPrice =
   const [hover, setHover] = useState<number | null>(null);
   // Default: traded intervals side by side (quiet intervals compressed, disclosed). "time" keeps real spacing.
   const [gapMode, setGapMode] = useState<GapMode>("compact");
+  const manualView = useRef(false);
   const digits = useRef(4);
   const shown = useRef<{ key: string; list: ChartRow[] } | null>(null);
 
@@ -145,6 +146,30 @@ export function PriceChart({ marketId, quoteCcy, tick, liveTrades, headerPrice =
   }, []);
 
   useEffect(() => {
+    manualView.current = false;
+    const plot = el.current;
+    if (!plot || !ready) return;
+    const manual = () => { manualView.current = true; };
+    plot.addEventListener("pointerdown", manual);
+    plot.addEventListener("wheel", manual, { passive: true });
+    let frame = 0;
+    const observer = new ResizeObserver(() => {
+      cancelAnimationFrame(frame);
+      frame = requestAnimationFrame(() => {
+        if (!manualView.current && plot.clientWidth && plot.clientHeight)
+          resetView(shown.current?.list.length ?? 0);
+      });
+    });
+    observer.observe(plot);
+    return () => {
+      observer.disconnect();
+      cancelAnimationFrame(frame);
+      plot.removeEventListener("pointerdown", manual);
+      plot.removeEventListener("wheel", manual);
+    };
+  }, [ready, viewKey, resetView]);
+
+  useEffect(() => {
     const a = api.current;
     if (!a) return;
     const rows = expanded.rows;
@@ -176,7 +201,11 @@ export function PriceChart({ marketId, quoteCcy, tick, liveTrades, headerPrice =
       a.sellVolume.setData(rows.map((c) => vol(c, "sellVolume")));
       // First data for this market/timeframe: narrow right-aligned view. Later replacements keep the user's pan/zoom.
       if (!prev || !prev.length) resetView(rows.length);
-      else if (tracking) ts.scrollToRealTime();
+      else if (!manualView.current || tracking) {
+        const end = rows.length - 1 + RIGHT_OFFSET;
+        if (logical && manualView.current) ts.setVisibleLogicalRange({ from: end - (logical.to - logical.from), to: end });
+        else resetView(rows.length);
+      }
       else {
         // Backfill prepended older rows: shift by the prepended count so the same candles stay put at the same spacing.
         const kept = prev ? preservedRange(prev, rows, logical) : null;
@@ -187,9 +216,9 @@ export function PriceChart({ marketId, quoteCcy, tick, liveTrades, headerPrice =
     shown.current = { key: viewKey, list: rows };
   }, [expanded, viewKey, ready, resetView, precision]);
 
-  const fit = useCallback(() => resetView(shown.current?.list.length ?? 0, true), [resetView]);
+  const fit = useCallback(() => { manualView.current = true; resetView(shown.current?.list.length ?? 0, true); }, [resetView]);
   // "Latest": newest candles right-aligned at the default narrow spacing (after Fit, scrolling alone would keep the squeezed spacing).
-  const latest = useCallback(() => resetView(shown.current?.list.length ?? 0), [resetView]);
+  const latest = useCallback(() => { manualView.current = false; resetView(shown.current?.list.length ?? 0); }, [resetView]);
 
   // ---- status (outside the canvas) ----
   const streaming = h?.live?.state === "streaming";
@@ -208,7 +237,7 @@ export function PriceChart({ marketId, quoteCcy, tick, liveTrades, headerPrice =
       return { tone: "warn", text: `Free Solana RPC is rate limiting · retrying${wait ? ` in ${wait}s` : ""} · ${head}` };
     }
     if (h.state === "unavailable") return { tone: "bad", text: `On-chain history request failed · retrying · ${head}`, retry: true };
-    if (h.state === "loading") return { tone: "ok", text: "Loading recent swaps from Solana…" };
+    if (h.state === "loading") return { tone: "ok", text: h.support?.detail ?? "Loading recent swaps from Solana…" };
     // Connection state and history coverage are separate facts: a connected live feed doesn't make loaded history complete.
     const mode = streaming ? "Live feed connected" : h.live?.state === "reconnecting" || h.live?.state === "subscribing" ? "Connecting live feed · polling" : "Polling (no live feed)";
     const cov = h.coverage === "complete" ? "history complete" : "history partial";
