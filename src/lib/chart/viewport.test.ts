@@ -1,15 +1,15 @@
 import { describe, expect, it } from "vitest";
-import { BAR_SPACING, MIN_BARS, RIGHT_OFFSET, fitRange, initialRange, preservedRange, tailUpdateFrom } from "./viewport";
+import { BAR_SPACING, MAX_SPARSE_SPACING, MIN_BARS, RIGHT_OFFSET, fitRange, initialRange, preservedRange, tailUpdateFrom } from "./viewport";
 
 const c = (t: number, close = 1, v = 1) => ({ t, o: 1, h: Math.max(1, close), l: Math.min(1, close), c: close, v, buys: 1, sells: 0 });
 
 describe("chart viewport", () => {
-  it("two sparse candles stay narrow and right-aligned on desktop and mobile", () => {
+  it("two sparse candles stay right-aligned and never stretch across desktop or mobile", () => {
     for (const width of [1100, 320, 280]) {
       const r = initialRange(2, width);
       const slots = r.to - r.from;
       expect(slots).toBeGreaterThanOrEqual(MIN_BARS);
-      expect(width / slots).toBeLessThanOrEqual(BAR_SPACING + 0.5); // never a giant bar
+      expect(width / slots).toBeLessThanOrEqual(MAX_SPARSE_SPACING + 0.5); // never a giant bar
       expect(r.to).toBe(1 + RIGHT_OFFSET);
     }
   });
@@ -33,6 +33,17 @@ describe("chart viewport", () => {
     const px = 320 / (r.to - r.from);
     expect(px).toBeGreaterThanOrEqual(6);
     expect(px).toBeLessThanOrEqual(8);
+  });
+  it("a few real candles on a wide plot open readable (wider than dense spacing) instead of a sliver at the right edge", () => {
+    const r = initialRange(6, 904);
+    const px = 904 / (r.to - r.from);
+    expect(px).toBeGreaterThan(BAR_SPACING + 5);
+    expect(px).toBeLessThanOrEqual(MAX_SPARSE_SPACING + 0.5);
+    expect(r.to).toBe(5 + RIGHT_OFFSET);
+  });
+  it("a dense series on a wide plot keeps ~BAR_SPACING px bars", () => {
+    const r = initialRange(500, 904);
+    expect(904 / (r.to - r.from)).toBeCloseTo(BAR_SPACING, 0);
   });
   it("backfill prepending older rows keeps the same candles in view at the same spacing", () => {
     const prev = [{ t: 300 }, { t: 360 }, { t: 420 }];

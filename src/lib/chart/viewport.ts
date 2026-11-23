@@ -6,10 +6,21 @@ export const BAR_SPACING = 7;   // px per bar at the default zoom
 // phones; 40 still stops 1–2 sparse candles from stretching while a ~320px phone plot gets ~7px spacing.
 export const MIN_BARS = 40;
 export const RIGHT_OFFSET = 5;  // empty bar slots kept right of the latest candle
+// Sparse series may open wider than BAR_SPACING (so a handful of real candles is readable before any zoom), but never
+// wider than this: a few candles must not stretch across the whole plot.
+export const MAX_SPARSE_SPACING = 16;
+const CONTEXT_SLOTS = 10; // extra slots left of the oldest candle when the series is sparse
 
-/** Logical range showing the newest candles right-aligned at ~BAR_SPACING px, never fewer than MIN_BARS slots. `widthPx` is the plot width (excluding the price axis). */
+/**
+ * Logical range with the newest candles right-aligned. Dense series: ~BAR_SPACING px. Sparse series: just enough slots
+ * for every candle plus context, at most MAX_SPARSE_SPACING px each, never fewer than MIN_BARS slots.
+ * `widthPx` is the plot width (excluding the price axis).
+ */
 export function initialRange(n: number, widthPx: number) {
-  const slots = Math.max(MIN_BARS, Math.floor(Math.max(0, widthPx) / BAR_SPACING));
+  const w = Math.max(0, widthPx);
+  const dense = Math.floor(w / BAR_SPACING);
+  const sparse = Math.max(n + RIGHT_OFFSET + CONTEXT_SLOTS, Math.ceil(w / MAX_SPARSE_SPACING));
+  const slots = Math.max(MIN_BARS, Math.min(dense, sparse));
   const to = n - 1 + RIGHT_OFFSET;
   return { from: to - slots, to };
 }

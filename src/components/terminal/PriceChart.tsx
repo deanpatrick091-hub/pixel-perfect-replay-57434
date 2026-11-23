@@ -150,8 +150,10 @@ export function PriceChart({ marketId, quoteCcy, tick, liveTrades, headerPrice =
     const plot = el.current;
     if (!plot || !ready) return;
     const manual = () => { manualView.current = true; };
-    plot.addEventListener("pointerdown", manual);
-    plot.addEventListener("wheel", manual, { passive: true });
+    // Capture phase: the chart canvas handles (and may stop) pointer/touch events before they bubble to this wrapper.
+    const opts = { capture: true, passive: true } as const;
+    const kinds = ["pointerdown", "mousedown", "touchstart", "wheel"] as const;
+    for (const k of kinds) plot.addEventListener(k, manual, opts);
     let frame = 0;
     const observer = new ResizeObserver(() => {
       cancelAnimationFrame(frame);
@@ -164,8 +166,7 @@ export function PriceChart({ marketId, quoteCcy, tick, liveTrades, headerPrice =
     return () => {
       observer.disconnect();
       cancelAnimationFrame(frame);
-      plot.removeEventListener("pointerdown", manual);
-      plot.removeEventListener("wheel", manual);
+      for (const k of kinds) plot.removeEventListener(k, manual, opts);
     };
   }, [ready, viewKey, resetView]);
 
